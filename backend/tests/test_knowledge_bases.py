@@ -1,10 +1,14 @@
 from datetime import datetime, timedelta
+from io import BytesIO
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Document, KnowledgeBase
+from app.services import knowledge_bases as knowledge_base_service
 
 
 def create_knowledge_base(
@@ -90,25 +94,31 @@ def test_get_missing_knowledge_base_returns_404(client: TestClient) -> None:
     assert response.json() == {"detail": "Knowledge base not found"}
 
 
-def test_delete_knowledge_base_cascades_to_documents(
+def test_delete_knowledge_base_removes_documents_and_files(
     client: TestClient,
+    upload_directory: Path,
     test_session_factory: sessionmaker[Session],
 ) -> None:
     created = create_knowledge_base(client)
     knowledge_base_id = created["id"]
     assert isinstance(knowledge_base_id, int)
 
-    with test_session_factory() as session:
-        document = Document(
-            knowledge_base_id=knowledge_base_id,
-            filename="stored.pdf",
-            original_filename="notes.pdf",
-            file_type="pdf",
-            file_size=1024,
+    documents = []
+    for filename, content in [
+        ("notes.pdf", b"%PDF-1.7 test content"),
+        ("summary.txt", b"summary"),
+    ]:
+        upload_response = client.post(
+            f"/api/knowledge-bases/{knowledge_base_id}/documents",
+            files={"file": (filename, BytesIO(content), "application/octet-stream")},
         )
-        session.add(document)
-        session.commit()
-        document_id = document.id
+        assert upload_response.status_code == 201
+        documents.append(upload_response.json())
+
+    stored_paths = [
+        upload_directory / document["filename"] for document in documents
+    ]
+    assert all(stored_path.is_file() for stored_path in stored_paths)
 
     delete_response = client.delete(f"/api/knowledge-bases/{knowledge_base_id}")
     get_response = client.get(f"/api/knowledge-bases/{knowledge_base_id}")
@@ -116,7 +126,78 @@ def test_delete_knowledge_base_cascades_to_documents(
     assert delete_response.status_code == 204
     assert delete_response.content == b""
     assert get_response.status_code == 404
+    assert all(not stored_path.exists() for stored_path in stored_paths)
 
+    with test_session_factory() as session:
+        assert session.get(KnowledgeBase, knowledge_base_id) is None
+        for document in documents:
+            assert session.get(Document, document["id"]) is None
+
+
+def test_delete_knowledge_base_database_failure_rolls_back_all_documents(
+    client: TestClient,
+    upload_directory: Path,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = created["id"]
+    assert isinstance(knowledge_base_id, int)
+    documents = []
+    for filename in ["first.txt", "second.txt"]:
+        upload_response = client.post(
+            f"/api/knowledge-bases/{knowledge_base_id}/documents",
+            files={"file": (filename, BytesIO(filename.encode()), "text/plain")},
+        )
+        assert upload_response.status_code == 201
+        documents.append(upload_response.json())
+
+    stored_paths = [
+        upload_directory / document["filename"] for document in documents
+    ]
+
+    with test_session_factory() as session:
+        def fail_commit_after_flush() -> None:
+            session.flush()
+            raise RuntimeError("database delete failed")
+
+        session.rollback = Mock(wraps=session.rollback)
+        session.commit = Mock(side_effect=fail_commit_after_flush)
+        with pytest.raises(RuntimeError, match="database delete failed"):
+            knowledge_base_service.delete_knowledge_base(
+                session,
+                knowledge_base_id,
+                upload_directory=upload_directory,
+            )
+        session.rollback.assert_called_once()
+
+    with test_session_factory() as session:
+        assert session.get(KnowledgeBase, knowledge_base_id) is not None
+        for document in documents:
+            assert session.get(Document, document["id"]) is not None
+    assert all(stored_path.is_file() for stored_path in stored_paths)
+
+
+def test_delete_knowledge_base_ignores_missing_document_file(
+    client: TestClient,
+    upload_directory: Path,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = created["id"]
+    assert isinstance(knowledge_base_id, int)
+    upload_response = client.post(
+        f"/api/knowledge-bases/{knowledge_base_id}/documents",
+        files={"file": ("notes.txt", BytesIO(b"notes"), "text/plain")},
+    )
+    assert upload_response.status_code == 201
+    document = upload_response.json()
+    document_id = document["id"]
+    stored_path = upload_directory / document["filename"]
+    stored_path.unlink()
+
+    delete_response = client.delete(f"/api/knowledge-bases/{knowledge_base_id}")
+
+    assert delete_response.status_code == 204
     with test_session_factory() as session:
         assert session.get(KnowledgeBase, knowledge_base_id) is None
         assert session.get(Document, document_id) is None

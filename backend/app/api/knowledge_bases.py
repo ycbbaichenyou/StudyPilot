@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -7,11 +8,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import KnowledgeBase
+from app.services import documents as document_service
 from app.services import knowledge_bases as knowledge_base_service
 
 
 router = APIRouter(prefix="/api/knowledge-bases", tags=["knowledge-bases"])
 DatabaseSession = Annotated[Session, Depends(get_db)]
+UploadDirectory = Annotated[Path, Depends(document_service.get_upload_directory)]
 
 
 class KnowledgeBaseCreate(BaseModel):
@@ -89,10 +92,12 @@ def get_knowledge_base(
 def delete_knowledge_base(
     knowledge_base_id: int,
     session: DatabaseSession,
+    upload_directory: UploadDirectory,
 ) -> Response:
     deleted = knowledge_base_service.delete_knowledge_base(
         session,
         knowledge_base_id,
+        upload_directory=upload_directory,
     )
     if not deleted:
         raise HTTPException(

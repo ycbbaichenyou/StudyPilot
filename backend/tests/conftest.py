@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, create_db_engine, get_db
 from app.main import create_app
+from app.services.documents import get_upload_directory
 
 
 @pytest.fixture
@@ -34,8 +36,14 @@ def test_session_factory(test_engine: Engine) -> sessionmaker[Session]:
 
 
 @pytest.fixture
+def upload_directory(tmp_path: Path) -> Path:
+    return tmp_path / "uploads"
+
+
+@pytest.fixture
 def client(
     test_session_factory: sessionmaker[Session],
+    upload_directory: Path,
 ) -> Generator[TestClient, None, None]:
     test_app = create_app(initialize_database=False)
 
@@ -44,6 +52,7 @@ def client(
             yield session
 
     test_app.dependency_overrides[get_db] = override_get_db
+    test_app.dependency_overrides[get_upload_directory] = lambda: upload_directory
 
     with TestClient(test_app) as test_client:
         yield test_client

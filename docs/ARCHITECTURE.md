@@ -4,9 +4,9 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库处于 V1 Stage 1。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库处于 V1 Stage 2。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
 
-文档上传、文档解析、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
+文档解析、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库和文档管理接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
 
 ## 2. V1 目标
 
@@ -137,14 +137,17 @@ V1 保持同步、直接的调用链。只有在真实需求和测量证据出�
 
 SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在序列化边界将这些时间重新标记为 UTC aware datetime，因此 JSON 时间戳必须包含 `Z` 或 `+00:00`。
 
-### 当前知识库 API
+### 当前知识库与文档 API
 
 - `POST /api/knowledge-bases`：创建知识库。
 - `GET /api/knowledge-bases`：按主键顺序列出知识库。
 - `GET /api/knowledge-bases/{knowledge_base_id}`：查询单个知识库。
 - `DELETE /api/knowledge-bases/{knowledge_base_id}`：删除知识库。
+- `POST /api/knowledge-bases/{knowledge_base_id}/documents`：上传一个支持的原始文档并创建 `Document` 记录。
+- `GET /api/knowledge-bases/{knowledge_base_id}/documents`：按主键顺序列出指定知识库的文档。
+- `DELETE /api/documents/{document_id}`：删除 `Document` 记录及对应的磁盘文件。
 
-`Document` 当前只有数据模型，不提供上传或其他文档 API。
+Stage 2 只保存 `.pdf`、`.docx`、`.txt` 和 `.md` 原始文件，不解析或抽取内容。单个文件最大 20 MiB，空文件会被拒绝。
 
 ### Chroma 保存
 
@@ -158,7 +161,7 @@ SQLite 文档记录与 Chroma 文本块必须共享稳定的 `document_id`。每
 
 不要在两个存储中无理由复制完整业务数据。SQLite 是结构化业务状态的事实来源；Chroma 是向量检索数据的事实来源。
 
-原始上传文件是否长期保留、保留在哪里，以及删除策略，尚未由当前需求确定。实现相关功能前必须先明确该决策，不能把临时文件路径当成长期架构。
+原始上传文件保存在 `backend/data/uploads/`，该目录不会提交到 Git。磁盘文件使用 UUID 生成的安全名称，用户提供的名称只记录在 `original_filename` 中，不参与路径拼接。创建数据库记录失败时删除已保存文件。删除文档时先提交 SQLite 记录删除，再尽力清理对应磁盘文件；文件不存在时忽略，文件删除失败时记录日志但不恢复数据库记录。删除知识库及其文档记录使用一次数据库事务，提交成功后再清理关联磁盘文件。
 
 ## 7. 主要数据流
 
@@ -260,9 +263,8 @@ V1 的测试应覆盖最重要且容易出错的边界：
 
 - 生成模型、嵌入模型及其供应商。
 - 文本分块大小、重叠量、检索数量和排序策略。
-- 除当前健康检查和知识库接口外，后续业务 API 的具体路径、字段和版本策略。
+- 除当前健康检查、知识库和文档管理接口外，后续业务 API 的具体路径、字段和版本策略。
 - 用户、课程、会话等业务实体及数据模型。
-- 原始文件的保留、清理和删除策略。
 - 部署方式、访问控制和生产环境规模。
 
 确定其中任何一项时，应优先选择满足当前用例的最简单方案，并同步更新本文档中受影响的架构说明。
