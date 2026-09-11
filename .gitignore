@@ -6,6 +6,9 @@ __pycache__/
 venv/
 .pytest_cache/
 
+# Local application data
+backend/data/*.db*
+
 # Environment variables
 .env
 .env.*
