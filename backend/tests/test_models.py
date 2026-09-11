@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import inspect, text
+from sqlalchemy import delete, inspect, select, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -15,7 +15,7 @@ from app.database import (
     get_database_url,
 )
 from app.main import create_app
-from app.models import Document, KnowledgeBase
+from app.models import Document, DocumentContent, DocumentStatus, KnowledgeBase
 
 
 def test_default_database_url_uses_stable_absolute_path(
@@ -28,10 +28,14 @@ def test_default_database_url_uses_stable_absolute_path(
     assert Path(make_url(DEFAULT_DATABASE_URL).database or "") == DATABASE_PATH
 
 
-def test_database_contains_stage_1_tables(test_engine: Engine) -> None:
+def test_database_contains_current_tables(test_engine: Engine) -> None:
     inspector = inspect(test_engine)
 
-    assert set(inspector.get_table_names()) == {"documents", "knowledge_bases"}
+    assert set(inspector.get_table_names()) == {
+        "document_contents",
+        "documents",
+        "knowledge_bases",
+    }
 
     document_foreign_keys = inspector.get_foreign_keys("documents")
     assert len(document_foreign_keys) == 1
@@ -39,6 +43,13 @@ def test_database_contains_stage_1_tables(test_engine: Engine) -> None:
     assert document_foreign_keys[0]["referred_table"] == "knowledge_bases"
     assert document_foreign_keys[0]["referred_columns"] == ["id"]
     assert document_foreign_keys[0]["options"]["ondelete"] == "CASCADE"
+
+    content_foreign_keys = inspector.get_foreign_keys("document_contents")
+    assert len(content_foreign_keys) == 1
+    assert content_foreign_keys[0]["constrained_columns"] == ["document_id"]
+    assert content_foreign_keys[0]["referred_table"] == "documents"
+    assert content_foreign_keys[0]["referred_columns"] == ["id"]
+    assert content_foreign_keys[0]["options"]["ondelete"] == "CASCADE"
 
 
 def test_sqlite_engine_enables_foreign_keys(test_engine: Engine) -> None:
@@ -62,6 +73,117 @@ def test_database_rejects_orphan_document(
 
         with pytest.raises(IntegrityError):
             session.commit()
+
+
+def test_document_content_orm_relationship_and_fields(
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    with test_session_factory() as session:
+        document = Document(
+            knowledge_base=KnowledgeBase(name="Computer Science"),
+            filename="stored.txt",
+            original_filename="notes.txt",
+            file_type="txt",
+            file_size=12,
+        )
+        content = DocumentContent(
+            document=document,
+            sequence=0,
+            text="First parsed unit",
+            source_type="line",
+            source_start=1,
+            source_end=2,
+        )
+        session.add(content)
+        session.commit()
+        session.refresh(content)
+
+        assert content.id is not None
+        assert content.document_id == document.id
+        assert document.contents == [content]
+        assert content.document is document
+        assert content.sequence == 0
+        assert content.text == "First parsed unit"
+        assert content.source_type == "line"
+        assert content.source_start == 1
+        assert content.source_end == 2
+        assert content.created_at.tzinfo is None
+        assert document.status == DocumentStatus.PENDING.value
+        assert document.parse_error is None
+        assert document.parsed_at is None
+
+
+def test_deleting_document_cascades_to_document_contents(
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    with test_session_factory() as session:
+        document = Document(
+            knowledge_base=KnowledgeBase(name="Computer Science"),
+            filename="stored.txt",
+            original_filename="notes.txt",
+            file_type="txt",
+            file_size=12,
+        )
+        content = DocumentContent(
+            document=document,
+            sequence=0,
+            text="Parsed unit",
+            source_type="line",
+            source_start=1,
+            source_end=1,
+        )
+        session.add(content)
+        session.commit()
+        document_id = document.id
+        content_id = content.id
+
+        session.execute(delete(Document).where(Document.id == document_id))
+        session.commit()
+
+        assert session.scalar(
+            select(Document).where(Document.id == document_id)
+        ) is None
+        assert session.scalar(
+            select(DocumentContent).where(DocumentContent.id == content_id)
+        ) is None
+
+
+def test_document_content_sequence_is_unique_per_document(
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    with test_session_factory() as session:
+        document = Document(
+            knowledge_base=KnowledgeBase(name="Computer Science"),
+            filename="stored.txt",
+            original_filename="notes.txt",
+            file_type="txt",
+            file_size=12,
+        )
+        document.contents.extend(
+            [
+                DocumentContent(
+                    sequence=0,
+                    text="First parsed unit",
+                    source_type="line",
+                    source_start=1,
+                    source_end=1,
+                ),
+                DocumentContent(
+                    sequence=0,
+                    text="Duplicate sequence",
+                    source_type="line",
+                    source_start=2,
+                    source_end=2,
+                ),
+            ]
+        )
+        session.add(document)
+
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+        session.rollback()
+        assert list(session.scalars(select(DocumentContent)).all()) == []
 
 
 def test_updated_at_changes_after_database_update(
@@ -102,6 +224,7 @@ def test_lifespan_uses_environment_database_and_creates_tables(
         test_app = create_app(database_engine=temporary_engine)
         with TestClient(test_app):
             assert set(inspect(temporary_engine).get_table_names()) == {
+                "document_contents",
                 "documents",
                 "knowledge_bases",
             }

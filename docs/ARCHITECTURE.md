@@ -4,9 +4,9 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库已完成 V1 Stage 2，并进入 Stage 3-1。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision；本阶段不改变已有业务表。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库已完成 V1 Stage 3-2。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型；尚未实现具体文档解析。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
 
-文档解析、DocumentContent、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库和文档管理接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
+PDF/DOCX 文档解析、Chunk、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。`DocumentContent` 当前仅提供解析结果的数据模型基础。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库和文档管理接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
 
 ## 2. V1 目标
 
@@ -130,12 +130,13 @@ V1 保持同步、直接的调用链。只有在真实需求和测量证据出�
 ### SQLite 保存
 
 - `KnowledgeBase`：整数主键、名称、可空描述和创建/更新时间。
-- `Document`：整数主键、所属知识库、文件名、原始文件名、文件类型、文件大小、简单字符串状态和创建/更新时间。
+- `Document`：整数主键、所属知识库、文件名、原始文件名、文件类型、文件大小、字符串解析状态、可空解析错误、可空解析完成时间和创建/更新时间。解析状态统一为 `pending`、`parsing`、`parsed` 或 `parse_failed`，数据库继续使用字符串列。
+- `DocumentContent`：整数主键、所属文档、有序序号、解析文本、来源类型、来源起止位置和创建时间。它保存解析阶段的文本单元，不是后续用于向量检索的 Chunk。
 - 后续业务明确需要的其他结构化数据。
 
 每个 `Document` 必须通过非空外键 `knowledge_base_id` 属于一个 `KnowledgeBase`。所有 SQLite Engine 通过同一个创建函数配置，并在每个连接上启用外键约束。默认 SQLite 文件位于 `backend/data/studypilot.db`；设置 `STUDYPILOT_DATABASE_URL` 后，应用与 Alembic 都使用该环境变量指定的 SQLite URL。
 
-从 Stage 3-1 开始，数据库结构版本由 Alembic migration 管理。`0001_stage_2_baseline` 完整描述 Stage 2 已有结构：全新数据库可以通过 `alembic upgrade head` 创建；已有 Stage 2 数据库使用 `alembic stamp 0001_stage_2_baseline` 接入版本管理，不能对已有业务表重复执行基线 DDL。应用仍保留 `init_db()` 和 `create_all()`，用于兼容现有启动过程及测试，但它只创建缺失表，不负责升级已有表。未来模型变化必须先生成并审查 migration，再通过 Alembic 升级。
+从 Stage 3-1 开始，数据库结构版本由 Alembic migration 管理。`0001_stage_2_baseline` 完整描述 Stage 2 已有结构：全新数据库可以通过 `alembic upgrade head` 创建；已有 Stage 2 数据库使用 `alembic stamp 0001_stage_2_baseline` 接入版本管理，不能对已有业务表重复执行基线 DDL。`0002_stage_3_2_document_content` 为 `documents` 增加解析字段并创建 `document_contents` 表。应用仍保留 `init_db()` 和 `create_all()`，用于兼容现有启动过程及测试，但它只创建缺失表，不负责升级已有表。未来模型变化必须先生成并审查 migration，再通过 Alembic 升级。
 
 SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在序列化边界将这些时间重新标记为 UTC aware datetime，因此 JSON 时间戳必须包含 `Z` 或 `+00:00`。
 
