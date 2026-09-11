@@ -3,8 +3,7 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine as sqlalchemy_create_engine
-from sqlalchemy import event
+from sqlalchemy import MetaData, create_engine as sqlalchemy_create_engine, event
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import Pool
@@ -18,6 +17,13 @@ DATABASE_URL_ENVIRONMENT_VARIABLE = "STUDYPILOT_DATABASE_URL"
 
 class Base(DeclarativeBase):
     pass
+
+
+def get_model_metadata() -> MetaData:
+    """Load every SQLAlchemy model and return the shared migration metadata."""
+    from app import models  # noqa: F401
+
+    return Base.metadata
 
 
 def _enable_sqlite_foreign_keys(
@@ -67,10 +73,8 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db(db_engine: Engine = engine) -> None:
-    from app import models  # noqa: F401
-
     database_path = db_engine.url.database
     if database_path and database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
 
-    Base.metadata.create_all(bind=db_engine)
+    get_model_metadata().create_all(bind=db_engine)

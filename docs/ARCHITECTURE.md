@@ -4,9 +4,9 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库处于 V1 Stage 2。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库已完成 V1 Stage 2，并进入 Stage 3-1。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision；本阶段不改变已有业务表。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
 
-文档解析、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库和文档管理接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
+文档解析、DocumentContent、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库和文档管理接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
 
 ## 2. V1 目标
 
@@ -25,7 +25,7 @@ V1 优先目标是：
 | --- | --- | --- |
 | 后端 | Python、FastAPI | 提供 HTTP API，编排文档处理、检索和问答流程 |
 | 前端 | Vue 3、Vite | 提供浏览器端交互界面并调用后端 API |
-| 结构化数据 | SQLite、SQLAlchemy | 保存文档、处理状态及其他结构化业务数据 |
+| 结构化数据 | SQLite、SQLAlchemy、Alembic | 保存结构化业务数据，并通过 migration 管理数据库结构版本 |
 | 向量存储 | Chroma | 保存文本块的向量和检索元数据，执行相似度检索 |
 | PDF 解析 | PyMuPDF | 提取 PDF 文本及页码信息 |
 | DOCX 解析 | python-docx | 提取 Word 文档的段落等结构化文本 |
@@ -133,7 +133,9 @@ V1 保持同步、直接的调用链。只有在真实需求和测量证据出�
 - `Document`：整数主键、所属知识库、文件名、原始文件名、文件类型、文件大小、简单字符串状态和创建/更新时间。
 - 后续业务明确需要的其他结构化数据。
 
-每个 `Document` 必须通过非空外键 `knowledge_base_id` 属于一个 `KnowledgeBase`。所有 SQLite Engine 通过同一个创建函数配置，并在每个连接上启用外键约束。默认 SQLite 文件位于 `backend/data/studypilot.db`；设置 `STUDYPILOT_DATABASE_URL` 后使用该环境变量指定的 SQLite URL。应用启动时使用 SQLAlchemy 元数据创建尚不存在的表；V1 Stage 1 不引入迁移系统或示例数据。
+每个 `Document` 必须通过非空外键 `knowledge_base_id` 属于一个 `KnowledgeBase`。所有 SQLite Engine 通过同一个创建函数配置，并在每个连接上启用外键约束。默认 SQLite 文件位于 `backend/data/studypilot.db`；设置 `STUDYPILOT_DATABASE_URL` 后，应用与 Alembic 都使用该环境变量指定的 SQLite URL。
+
+从 Stage 3-1 开始，数据库结构版本由 Alembic migration 管理。`0001_stage_2_baseline` 完整描述 Stage 2 已有结构：全新数据库可以通过 `alembic upgrade head` 创建；已有 Stage 2 数据库使用 `alembic stamp 0001_stage_2_baseline` 接入版本管理，不能对已有业务表重复执行基线 DDL。应用仍保留 `init_db()` 和 `create_all()`，用于兼容现有启动过程及测试，但它只创建缺失表，不负责升级已有表。未来模型变化必须先生成并审查 migration，再通过 Alembic 升级。
 
 SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在序列化边界将这些时间重新标记为 UTC aware datetime，因此 JSON 时间戳必须包含 `Z` 或 `+00:00`。
 
@@ -216,6 +218,8 @@ StudyPilot/
 ├── docs/
 │   └── ARCHITECTURE.md
 ├── backend/
+│   ├── alembic/           # 数据库 migration 脚本与运行环境
+│   ├── alembic.ini        # Alembic 配置入口
 │   ├── app/
 │   │   ├── api/          # FastAPI 路由和请求/响应模型
 │   │   ├── services/     # 用例编排
@@ -240,6 +244,7 @@ V1 的测试应覆盖最重要且容易出错的边界：
 - PDF 和 DOCX 解析结果及来源位置。
 - 文本清洗、分块边界和元数据继承。
 - SQLite 数据访问与状态变化。
+- Alembic migration 与 SQLAlchemy metadata 是否保持一致。
 - Chroma 写入、检索和稳定标识关联。
 - 无结果、解析失败、存储失败和模型失败等错误路径。
 - FastAPI 请求校验、响应结构和关键用例。
