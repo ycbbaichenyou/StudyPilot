@@ -16,7 +16,9 @@ from sqlalchemy.orm import Session
 
 from app.api.knowledge_bases import get_existing_knowledge_base
 from app.database import get_db
+from app.document_processing.exceptions import DocumentParsingPersistenceError
 from app.models import Document
+from app.services import document_parsing as document_parsing_service
 from app.services import documents as document_service
 
 
@@ -35,12 +37,16 @@ class DocumentResponse(BaseModel):
     file_type: str
     file_size: int
     status: str
+    parse_error: str | None
+    parsed_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("created_at", "updated_at", mode="after")
+    @field_validator("parsed_at", "created_at", "updated_at", mode="after")
     @classmethod
-    def mark_timestamp_as_utc(cls, value: datetime) -> datetime:
+    def mark_timestamp_as_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
@@ -89,6 +95,35 @@ def list_documents(
 ) -> list[Document]:
     get_existing_knowledge_base(knowledge_base_id, session)
     return document_service.list_documents(session, knowledge_base_id)
+
+
+@router.post(
+    "/api/documents/{document_id}/parse",
+    response_model=DocumentResponse,
+)
+def parse_document(
+    document_id: int,
+    session: DatabaseSession,
+    upload_directory: UploadDirectory,
+) -> Document:
+    try:
+        document = document_parsing_service.parse_document(
+            session,
+            document_id,
+            upload_directory=upload_directory,
+        )
+    except DocumentParsingPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document parsing status could not be saved",
+        ) from exc
+
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+    return document
 
 
 @router.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

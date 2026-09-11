@@ -2,7 +2,7 @@
 
 StudyPilot 是一个供本科生学习和实践 AI 应用开发的项目。
 
-当前仓库已完成 V1 Stage 2，并进入 Stage 3-1。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传和文档管理能力。Stage 3-1 开始使用 Alembic 管理数据库结构版本；文档解析、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。
+当前仓库已完成 V1 Stage 3-3。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传和文档管理能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline。Chunk、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。
 
 ## 环境要求
 
@@ -25,6 +25,7 @@ uv run --no-python-downloads uvicorn app.main:app --reload
 
 - 健康检查：`http://127.0.0.1:8000/api/health`
 - 知识库接口：`http://127.0.0.1:8000/api/knowledge-bases`
+- 文档解析接口：`POST http://127.0.0.1:8000/api/documents/{document_id}/parse`
 - API 文档：`http://127.0.0.1:8000/docs`
 
 运行 `alembic upgrade head` 会在全新环境中创建 `backend/data/studypilot.db` 及当前数据表，并把数据库升级到最新 revision。应用启动时仍会通过 `init_db()` 创建缺失的当前数据表，以保持现有启动和测试行为；已有数据库的结构升级必须使用 Alembic。该本地数据库文件已被 Git 忽略。

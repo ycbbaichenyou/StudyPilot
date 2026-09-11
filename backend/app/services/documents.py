@@ -39,7 +39,7 @@ def _get_file_type(original_filename: str) -> str:
     return file_type
 
 
-def _get_stored_file_path(upload_directory: Path, filename: str) -> Path:
+def get_stored_file_path(upload_directory: Path, filename: str) -> Path:
     if Path(filename).name != filename:
         raise ValueError("Stored filename must not contain a path")
     return upload_directory / filename
@@ -53,7 +53,7 @@ def _save_uploaded_file(
 ) -> tuple[str, int]:
     upload_directory.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid4().hex}.{file_type}"
-    stored_path = _get_stored_file_path(upload_directory, filename)
+    stored_path = get_stored_file_path(upload_directory, filename)
     temporary_path = upload_directory / f".{filename}.part"
     file_size = 0
 
@@ -94,7 +94,7 @@ def create_document(
             upload_directory=upload_directory,
             file_type=file_type,
         )
-        stored_path = _get_stored_file_path(upload_directory, filename)
+        stored_path = get_stored_file_path(upload_directory, filename)
         document = Document(
             knowledge_base_id=knowledge_base_id,
             filename=filename,
@@ -131,7 +131,7 @@ def delete_stored_file(
     filename: str,
 ) -> None:
     try:
-        stored_path = _get_stored_file_path(upload_directory, filename)
+        stored_path = get_stored_file_path(upload_directory, filename)
         stored_path.unlink()
     except FileNotFoundError:
         pass

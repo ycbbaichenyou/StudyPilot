@@ -4,9 +4,9 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库已完成 V1 Stage 3-2。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型；尚未实现具体文档解析。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库已完成 V1 Stage 3-3。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
 
-PDF/DOCX 文档解析、Chunk、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。`DocumentContent` 当前仅提供解析结果的数据模型基础。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库和文档管理接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
+Chunk、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。`DocumentContent` 只保存原始解析文本单元，不是用于向量检索的 Chunk。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理和文档解析接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
 
 ## 2. V1 目标
 
@@ -96,10 +96,12 @@ V1 保持同步、直接的调用链。只有在真实需求和测量证据出�
 
 文档处理模块按文件类型选择解析器：
 
-- PDF：使用 PyMuPDF，尽量保留页码，以便回答溯源。
-- DOCX：使用 python-docx，按段落等可识别结构提取文本。
+- PDF：使用 PyMuPDF，每页生成一个文本单元并保留 1-based 页码。
+- DOCX：使用 python-docx，按正文段落顺序生成文本单元并保留 1-based 段落号。
+- TXT：使用 UTF-8 或 UTF-8 BOM 读取，每行生成一个文本单元并保留 1-based 行号。
+- Markdown：使用 UTF-8 读取为一个完整文本单元，保留 Markdown 原文和完整行号范围。
 
-解析后的统一文本单元至少应能携带来源文件、文档标识和位置。清洗与分块策略必须由项目代码显式实现，并可以独立测试。
+四种解析器只负责将 `Path` 转换为 `list[ParsedTextUnit]`，不接触数据库或 SQLAlchemy Session。`ParsedTextUnit.sequence` 从 0 开始，来源位置从 1 开始。解析应用服务负责查询文档、切换状态、选择解析器，并在一个事务中删除旧内容、写入全部新内容和将状态更新为 `parsed`。解析或结果事务失败时，服务回滚未完成写入并将状态记录为 `parse_failed`，因此不会留下部分新内容。清洗与分块策略尚未实现，后续也必须由项目代码显式实现并可以独立测试。
 
 ### 5.5 RAG 核心模块
 
@@ -149,8 +151,9 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 - `POST /api/knowledge-bases/{knowledge_base_id}/documents`：上传一个支持的原始文档并创建 `Document` 记录。
 - `GET /api/knowledge-bases/{knowledge_base_id}/documents`：按主键顺序列出指定知识库的文档。
 - `DELETE /api/documents/{document_id}`：删除 `Document` 记录及对应的磁盘文件。
+- `POST /api/documents/{document_id}/parse`：同步解析原始文件并保存 `DocumentContent`；文档不存在返回 404，解析失败返回 200 和状态为 `parse_failed` 的文档。
 
-Stage 2 只保存 `.pdf`、`.docx`、`.txt` 和 `.md` 原始文件，不解析或抽取内容。单个文件最大 20 MiB，空文件会被拒绝。
+上传接口保存 `.pdf`、`.docx`、`.txt` 和 `.md` 原始文件。Stage 3-3 的解析接口显式触发同步文本抽取；上传本身仍不自动解析。单个文件最大 20 MiB，空文件会被拒绝。
 
 ### Chroma 保存
 
@@ -224,7 +227,8 @@ StudyPilot/
 │   ├── app/
 │   │   ├── api/          # FastAPI 路由和请求/响应模型
 │   │   ├── services/     # 用例编排
-│   │   ├── rag/          # 解析、分块、嵌入、检索、上下文组装
+│   │   ├── document_processing/ # 纯文档解析器和统一解析结果
+│   │   ├── rag/          # 后续分块、嵌入、检索、上下文组装
 │   │   ├── db/           # SQLAlchemy 与 SQLite
 │   │   ├── stores/       # Chroma 访问
 │   │   └── core/         # 配置、日志、公共错误
