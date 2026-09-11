@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Node.js and Vite
+node_modules/
+dist/
+
+# IDE and operating system files
+.idea/
+.vscode/
+*.swp
+.DS_Store
