@@ -4,17 +4,20 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import inspect, text
 
 from app.database import create_db_engine
+from app.main import create_app
 
 
 BACKEND_DIRECTORY = Path(__file__).resolve().parents[1]
 BASELINE_REVISION = "0001_stage_2_baseline"
-HEAD_REVISION = "0002_stage_3_2_document_content"
+DOCUMENT_CONTENT_REVISION = "0002_stage_3_2_document_content"
+HEAD_REVISION = "0003_stage_4_2_chunk"
 
 
-def test_stage_3_2_migration_upgrades_baseline_database(
+def test_migrations_upgrade_baseline_database_to_current_head(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -77,6 +80,34 @@ def test_stage_3_2_migration_upgrades_baseline_database(
     finally:
         engine.dispose()
 
+    command.upgrade(config, DOCUMENT_CONTENT_REVISION)
+
+    engine = create_db_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO document_contents
+                        (
+                            id,
+                            document_id,
+                            sequence,
+                            text,
+                            source_type,
+                            source_start,
+                            source_end,
+                            created_at
+                        )
+                    VALUES
+                        (1, 1, 0, 'Parsed text', 'line', 1, 1, :created_at)
+                    """
+                ),
+                {"created_at": datetime(2026, 9, 11, 10, 1)},
+            )
+    finally:
+        engine.dispose()
+
     command.upgrade(config, "head")
 
     engine = create_db_engine(database_url)
@@ -84,6 +115,7 @@ def test_stage_3_2_migration_upgrades_baseline_database(
         inspector = inspect(engine)
         assert set(inspector.get_table_names()) == {
             "alembic_version",
+            "chunks",
             "document_contents",
             "documents",
             "knowledge_bases",
@@ -118,6 +150,38 @@ def test_stage_3_2_migration_upgrades_baseline_database(
             }
         ]
 
+        chunk_foreign_keys = inspector.get_foreign_keys("chunks")
+        assert len(chunk_foreign_keys) == 1
+        assert chunk_foreign_keys[0]["constrained_columns"] == [
+            "document_content_id"
+        ]
+        assert chunk_foreign_keys[0]["referred_table"] == "document_contents"
+        assert chunk_foreign_keys[0]["options"]["ondelete"] == "CASCADE"
+
+        assert inspector.get_unique_constraints("chunks") == [
+            {
+                "name": "uq_chunks_document_content_id_sequence",
+                "column_names": ["document_content_id", "sequence"],
+            }
+        ]
+        chunk_check_constraint_names = {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("chunks")
+        }
+        assert chunk_check_constraint_names == {
+            "ck_chunks_end_offset_after_start_offset",
+            "ck_chunks_sequence_nonnegative",
+            "ck_chunks_start_offset_nonnegative",
+        }
+        assert inspector.get_indexes("chunks") == [
+            {
+                "name": "ix_chunks_document_content_id",
+                "column_names": ["document_content_id"],
+                "unique": 0,
+                "dialect_options": {},
+            }
+        ]
+
         with engine.connect() as connection:
             migrated_document = connection.execute(
                 text(
@@ -129,8 +193,72 @@ def test_stage_3_2_migration_upgrades_baseline_database(
                 )
             ).one()
             assert migrated_document == ("pending", None, None)
+            assert connection.execute(
+                text(
+                    """
+                    SELECT document_id, sequence, text
+                    FROM document_contents
+                    WHERE id = 1
+                    """
+                )
+            ).one() == (1, 0, "Parsed text")
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
                 HEAD_REVISION
+            )
+    finally:
+        engine.dispose()
+
+
+def test_application_start_does_not_preempt_pending_chunk_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'application-start.db'}"
+    monkeypatch.setenv("STUDYPILOT_DATABASE_URL", database_url)
+    config = Config(str(BACKEND_DIRECTORY / "alembic.ini"))
+    command.upgrade(config, DOCUMENT_CONTENT_REVISION)
+
+    engine = create_db_engine(database_url)
+    try:
+        test_app = create_app(database_engine=engine)
+        with TestClient(test_app) as client:
+            assert client.get("/api/health").status_code == 200
+            assert "chunks" not in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_db_engine(database_url)
+    try:
+        assert "chunks" in inspect(engine).get_table_names()
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                HEAD_REVISION
+            )
+    finally:
+        engine.dispose()
+
+
+def test_chunk_migration_downgrade_preserves_stage_3_2_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'downgrade.db'}"
+    monkeypatch.setenv("STUDYPILOT_DATABASE_URL", database_url)
+    config = Config(str(BACKEND_DIRECTORY / "alembic.ini"))
+    command.upgrade(config, "head")
+
+    command.downgrade(config, DOCUMENT_CONTENT_REVISION)
+
+    engine = create_db_engine(database_url)
+    try:
+        table_names = set(inspect(engine).get_table_names())
+        assert "chunks" not in table_names
+        assert {"documents", "document_contents"} <= table_names
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                DOCUMENT_CONTENT_REVISION
             )
     finally:
         engine.dispose()

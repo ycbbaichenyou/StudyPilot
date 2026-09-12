@@ -15,7 +15,7 @@ from app.database import (
     get_database_url,
 )
 from app.main import create_app
-from app.models import Document, DocumentContent, DocumentStatus, KnowledgeBase
+from app.models import Chunk, Document, DocumentContent, DocumentStatus, KnowledgeBase
 
 
 def test_default_database_url_uses_stable_absolute_path(
@@ -32,6 +32,7 @@ def test_database_contains_current_tables(test_engine: Engine) -> None:
     inspector = inspect(test_engine)
 
     assert set(inspector.get_table_names()) == {
+        "chunks",
         "document_contents",
         "documents",
         "knowledge_bases",
@@ -50,6 +51,13 @@ def test_database_contains_current_tables(test_engine: Engine) -> None:
     assert content_foreign_keys[0]["referred_table"] == "documents"
     assert content_foreign_keys[0]["referred_columns"] == ["id"]
     assert content_foreign_keys[0]["options"]["ondelete"] == "CASCADE"
+
+    chunk_foreign_keys = inspector.get_foreign_keys("chunks")
+    assert len(chunk_foreign_keys) == 1
+    assert chunk_foreign_keys[0]["constrained_columns"] == ["document_content_id"]
+    assert chunk_foreign_keys[0]["referred_table"] == "document_contents"
+    assert chunk_foreign_keys[0]["referred_columns"] == ["id"]
+    assert chunk_foreign_keys[0]["options"]["ondelete"] == "CASCADE"
 
 
 def test_sqlite_engine_enables_foreign_keys(test_engine: Engine) -> None:
@@ -113,7 +121,47 @@ def test_document_content_orm_relationship_and_fields(
         assert document.parsed_at is None
 
 
-def test_deleting_document_cascades_to_document_contents(
+def test_chunk_orm_relationship_and_fields(
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    with test_session_factory() as session:
+        content = DocumentContent(
+            document=Document(
+                knowledge_base=KnowledgeBase(name="Computer Science"),
+                filename="stored.txt",
+                original_filename="notes.txt",
+                file_type="txt",
+                file_size=12,
+            ),
+            sequence=0,
+            text="First parsed unit",
+            source_type="line",
+            source_start=1,
+            source_end=1,
+        )
+        chunk = Chunk(
+            document_content=content,
+            sequence=0,
+            text="First",
+            start_offset=0,
+            end_offset=5,
+        )
+        session.add(chunk)
+        session.commit()
+        session.refresh(chunk)
+
+        assert chunk.id is not None
+        assert chunk.document_content_id == content.id
+        assert content.chunks == [chunk]
+        assert chunk.document_content is content
+        assert chunk.sequence == 0
+        assert chunk.text == "First"
+        assert chunk.start_offset == 0
+        assert chunk.end_offset == 5
+        assert chunk.created_at.tzinfo is None
+
+
+def test_deleting_document_cascades_to_contents_and_chunks(
     test_session_factory: sessionmaker[Session],
 ) -> None:
     with test_session_factory() as session:
@@ -132,10 +180,18 @@ def test_deleting_document_cascades_to_document_contents(
             source_start=1,
             source_end=1,
         )
+        chunk = Chunk(
+            document_content=content,
+            sequence=0,
+            text="Parsed unit",
+            start_offset=0,
+            end_offset=11,
+        )
         session.add(content)
         session.commit()
         document_id = document.id
         content_id = content.id
+        chunk_id = chunk.id
 
         session.execute(delete(Document).where(Document.id == document_id))
         session.commit()
@@ -146,6 +202,7 @@ def test_deleting_document_cascades_to_document_contents(
         assert session.scalar(
             select(DocumentContent).where(DocumentContent.id == content_id)
         ) is None
+        assert session.scalar(select(Chunk).where(Chunk.id == chunk_id)) is None
 
 
 def test_document_content_sequence_is_unique_per_document(
@@ -186,6 +243,49 @@ def test_document_content_sequence_is_unique_per_document(
         assert list(session.scalars(select(DocumentContent)).all()) == []
 
 
+def test_chunk_sequence_is_unique_per_document_content(
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    with test_session_factory() as session:
+        content = DocumentContent(
+            document=Document(
+                knowledge_base=KnowledgeBase(name="Computer Science"),
+                filename="stored.txt",
+                original_filename="notes.txt",
+                file_type="txt",
+                file_size=12,
+            ),
+            sequence=0,
+            text="Parsed unit",
+            source_type="line",
+            source_start=1,
+            source_end=1,
+        )
+        content.chunks.extend(
+            [
+                Chunk(
+                    sequence=0,
+                    text="First",
+                    start_offset=0,
+                    end_offset=5,
+                ),
+                Chunk(
+                    sequence=0,
+                    text="Second",
+                    start_offset=6,
+                    end_offset=11,
+                ),
+            ]
+        )
+        session.add(content)
+
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+        session.rollback()
+        assert list(session.scalars(select(Chunk)).all()) == []
+
+
 def test_updated_at_changes_after_database_update(
     test_session_factory: sessionmaker[Session],
 ) -> None:
@@ -208,7 +308,7 @@ def test_updated_at_changes_after_database_update(
         assert knowledge_base.updated_at.tzinfo is None
 
 
-def test_lifespan_uses_environment_database_and_creates_tables(
+def test_lifespan_prepares_environment_database_without_creating_tables(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -223,11 +323,8 @@ def test_lifespan_uses_environment_database_and_creates_tables(
 
         test_app = create_app(database_engine=temporary_engine)
         with TestClient(test_app):
-            assert set(inspect(temporary_engine).get_table_names()) == {
-                "document_contents",
-                "documents",
-                "knowledge_bases",
-            }
+            assert database_path.parent.is_dir()
+            assert inspect(temporary_engine).get_table_names() == []
 
         assert database_path.exists()
         with temporary_engine.connect() as connection:

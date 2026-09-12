@@ -4,9 +4,9 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库已完成 V1 Stage 4-1。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库已完成 V1 Stage 4-2。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
 
-Chunk、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。`DocumentContent` 只保存原始解析文本单元，不是用于向量检索的 Chunk。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理和文档解析接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
+Embedding、Chroma、检索、RAG、LLM 和 Agent 尚未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，两者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析和分块接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
 
 ## 2. V1 目标
 
@@ -101,7 +101,11 @@ V1 保持同步、直接的调用链。只有在真实需求和测量证据出�
 - TXT：使用 UTF-8 或 UTF-8 BOM 读取，每行生成一个文本单元并保留 1-based 行号。
 - Markdown：使用 UTF-8 读取为一个完整文本单元，保留 Markdown 原文和完整行号范围。
 
-四种解析器只负责将 `Path` 转换为 `list[ParsedTextUnit]`，不接触数据库或 SQLAlchemy Session。`ParsedTextUnit.sequence` 从 0 开始，来源位置从 1 开始。解析应用服务负责查询文档、切换状态、选择解析器，并在一个事务中删除旧内容、写入全部新内容和将状态更新为 `parsed`。解析或结果事务失败时，服务回滚未完成写入并将状态记录为 `parse_failed`，因此不会留下部分新内容。清洗与分块策略尚未实现，后续也必须由项目代码显式实现并可以独立测试。
+四种解析器只负责将 `Path` 转换为 `list[ParsedTextUnit]`，不接触数据库或 SQLAlchemy Session。`ParsedTextUnit.sequence` 从 0 开始，来源位置从 1 开始。解析应用服务负责查询文档、切换状态、选择解析器，并在一个事务中删除旧内容、写入全部新内容和将状态更新为 `parsed`。解析或结果事务失败时，服务回滚未完成写入并将状态记录为 `parse_failed`，因此不会留下部分新内容。
+
+Stage 4-2 的分块器只接收单个 `DocumentContent.text`，不读取原文件、不调用 parser，也不跨越 DocumentContent 边界。默认按 800 个 Python 字符分块并保留 100 字符重叠；优先在窗口后半段的换行或中英文句末标点后切分，没有自然边界时按硬边界切分。每个 Chunk 保存其在 DocumentContent 文本中的 0-based、左闭右开字符 offset，因此必须满足 `chunk.text == content.text[start_offset:end_offset]`。纯空白内容不生成 Chunk。当前不进行分词、token 计算或文本归一化。
+
+分块是解析之后的独立同步步骤：只有状态为 `parsed` 的文档可以显式创建或重建 Chunk。服务先在内存中生成全部分块结果，再在一个事务中原子替换旧 Chunk；失败时保留上一次完整结果。成功重新解析会通过外键级联删除由旧 DocumentContent 派生的 Chunk，解析失败和事务回滚则保留原有内容与 Chunk。
 
 ### 5.5 RAG 核心模块
 
@@ -134,11 +138,12 @@ V1 保持同步、直接的调用链。只有在真实需求和测量证据出�
 - `KnowledgeBase`：整数主键、名称、可空描述和创建/更新时间。
 - `Document`：整数主键、所属知识库、文件名、原始文件名、文件类型、文件大小、字符串解析状态、可空解析错误、可空解析完成时间和创建/更新时间。解析状态统一为 `pending`、`parsing`、`parsed` 或 `parse_failed`，数据库继续使用字符串列。
 - `DocumentContent`：整数主键、所属文档、有序序号、解析文本、来源类型、来源起止位置和创建时间。它保存解析阶段的文本单元，不是后续用于向量检索的 Chunk。
+- `Chunk`：整数主键、所属 DocumentContent、在该内容内的有序序号、文本、字符起止 offset 和创建时间。一个 Chunk 只属于一个 DocumentContent；来源类型及页码、段落或行号继续以 DocumentContent 为事实来源。
 - 后续业务明确需要的其他结构化数据。
 
 每个 `Document` 必须通过非空外键 `knowledge_base_id` 属于一个 `KnowledgeBase`。所有 SQLite Engine 通过同一个创建函数配置，并在每个连接上启用外键约束。默认 SQLite 文件位于 `backend/data/studypilot.db`；设置 `STUDYPILOT_DATABASE_URL` 后，应用与 Alembic 都使用该环境变量指定的 SQLite URL。
 
-从 Stage 3-1 开始，数据库结构版本由 Alembic migration 管理。`0001_stage_2_baseline` 完整描述 Stage 2 已有结构：全新数据库可以通过 `alembic upgrade head` 创建；已有 Stage 2 数据库使用 `alembic stamp 0001_stage_2_baseline` 接入版本管理，不能对已有业务表重复执行基线 DDL。`0002_stage_3_2_document_content` 为 `documents` 增加解析字段并创建 `document_contents` 表。应用仍保留 `init_db()` 和 `create_all()`，用于兼容现有启动过程及测试，但它只创建缺失表，不负责升级已有表。未来模型变化必须先生成并审查 migration，再通过 Alembic 升级。
+从 Stage 3-1 开始，数据库结构版本由 Alembic migration 管理。`0001_stage_2_baseline` 完整描述 Stage 2 已有结构：全新数据库可以通过 `alembic upgrade head` 创建；已有 Stage 2 数据库使用 `alembic stamp 0001_stage_2_baseline` 接入版本管理，不能对已有业务表重复执行基线 DDL。`0002_stage_3_2_document_content` 为 `documents` 增加解析字段并创建 `document_contents` 表；`0003_stage_4_2_chunk` 创建 `chunks` 表及其外键、索引和完整性约束。应用启动时的 `init_db()` 默认只准备数据库目录，不创建或升级 schema，正常运行前必须执行 `alembic upgrade head`。只有测试创建隔离数据库时，才可以显式调用 `init_db(create_tables=True)` 使用当前 SQLAlchemy metadata 建表。未来模型变化必须先生成并审查 migration，再通过 Alembic 升级。
 
 SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在序列化边界将这些时间重新标记为 UTC aware datetime，因此 JSON 时间戳必须包含 `Z` 或 `+00:00`。
 
@@ -152,6 +157,8 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 - `GET /api/knowledge-bases/{knowledge_base_id}/documents`：按主键顺序列出指定知识库的文档。
 - `GET /api/documents/{document_id}`：查询单个文档的当前信息。
 - `GET /api/documents/{document_id}/contents`：查询文档状态及解析文本单元，内容显式按 `sequence` 升序返回；尚未解析时返回空列表，解析失败时仍返回已有内容。
+- `GET /api/documents/{document_id}/chunks`：查询当前已有 Chunk，不触发创建或重建；结果按 DocumentContent 和 Chunk 的 `sequence` 升序返回。
+- `POST /api/documents/{document_id}/chunks`：为已解析文档同步创建或原子重建 Chunk；文档不存在返回 404，状态不是 `parsed` 返回 409。
 - `DELETE /api/documents/{document_id}`：删除 `Document` 记录及对应的磁盘文件。
 - `POST /api/documents/{document_id}/parse`：同步解析原始文件并保存 `DocumentContent`；文档不存在返回 404，解析失败返回 200 和状态为 `parse_failed` 的文档。
 
@@ -165,7 +172,7 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 
 ### 跨存储关联
 
-SQLite 文档记录与 Chroma 文本块必须共享稳定的 `document_id`。每个文本块还应拥有稳定的 `chunk_id`，并携带适用的来源位置，例如 PDF 页码或 DOCX 段落序号。
+未来写入 Chroma 时，SQLite 文档记录与向量记录必须共享稳定的 `document_id`。`Chunk.id` 可作为稳定的 `chunk_id`；通过 Chunk 对应的 DocumentContent 可以取得文档标识和适用的来源位置，例如 PDF 页码或 DOCX 段落序号。Stage 4-2 尚不写入或调用 Chroma。
 
 不要在两个存储中无理由复制完整业务数据。SQLite 是结构化业务状态的事实来源；Chroma 是向量检索数据的事实来源。
 
@@ -274,7 +281,7 @@ V1 的测试应覆盖最重要且容易出错的边界：
 以下事项当前没有足够需求，不应提前猜定：
 
 - 生成模型、嵌入模型及其供应商。
-- 文本分块大小、重叠量、检索数量和排序策略。
+- 检索数量和排序策略。
 - 除当前健康检查、知识库和文档管理接口外，后续业务 API 的具体路径、字段和版本策略。
 - 用户、课程、会话等业务实体及数据模型。
 - 部署方式、访问控制和生产环境规模。

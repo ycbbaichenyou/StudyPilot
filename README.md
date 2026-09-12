@@ -2,7 +2,7 @@
 
 StudyPilot 是一个供本科生学习和实践 AI 应用开发的项目。
 
-当前仓库已完成 V1 Stage 4-1。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传、文档管理、文档信息查询和解析内容查询能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline。Chunk、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。
+当前仓库已完成 V1 Stage 4-2。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传、文档管理、文档解析、内容查询和字符分块能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline。分块层按 `DocumentContent → Chunk` 的清晰边界工作；Embedding、Chroma、RAG、LLM 和 Agent 尚未实现。
 
 ## 环境要求
 
@@ -28,9 +28,11 @@ uv run --no-python-downloads uvicorn app.main:app --reload
 - 文档信息查询：`GET http://127.0.0.1:8000/api/documents/{document_id}`
 - 解析内容查询：`GET http://127.0.0.1:8000/api/documents/{document_id}/contents`
 - 文档解析接口：`POST http://127.0.0.1:8000/api/documents/{document_id}/parse`
+- Chunk 查询：`GET http://127.0.0.1:8000/api/documents/{document_id}/chunks`
+- Chunk 创建或重建：`POST http://127.0.0.1:8000/api/documents/{document_id}/chunks`
 - API 文档：`http://127.0.0.1:8000/docs`
 
-运行 `alembic upgrade head` 会在全新环境中创建 `backend/data/studypilot.db` 及当前数据表，并把数据库升级到最新 revision。应用启动时仍会通过 `init_db()` 创建缺失的当前数据表，以保持现有启动和测试行为；已有数据库的结构升级必须使用 Alembic。该本地数据库文件已被 Git 忽略。
+运行 `alembic upgrade head` 会在全新环境中创建 `backend/data/studypilot.db` 及当前数据表，并把数据库升级到最新 revision。应用启动时不会自动创建或升级数据表；所有正常运行环境都必须先通过 Alembic 将数据库升级到当前版本。测试可以显式调用 `init_db(create_tables=True)` 创建隔离 schema。该本地数据库文件已被 Git 忽略。
 
 如果数据库是在 Stage 2 或更早版本中由应用创建的，并且已经包含 `knowledge_bases` 和 `documents` 表，请只在首次接入 Alembic 时执行：
 

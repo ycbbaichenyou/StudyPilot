@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 from app.api.knowledge_bases import get_existing_knowledge_base
 from app.database import get_db
 from app.document_processing.exceptions import DocumentParsingPersistenceError
-from app.models import Document, DocumentContent
+from app.models import Chunk, Document
+from app.services import document_chunking as document_chunking_service
 from app.services import document_parsing as document_parsing_service
 from app.services import documents as document_service
 
@@ -67,6 +68,50 @@ class DocumentContentsResponse(BaseModel):
     document_id: int
     status: str
     contents: list[DocumentContentResponse]
+
+
+class ChunkResponse(BaseModel):
+    id: int
+    document_content_id: int
+    content_sequence: int
+    sequence: int
+    text: str
+    start_offset: int
+    end_offset: int
+    source_type: str
+    source_start: int
+    source_end: int
+
+
+class DocumentChunksResponse(BaseModel):
+    document_id: int
+    status: str
+    chunks: list[ChunkResponse]
+
+
+def _build_document_chunks_response(
+    document: Document,
+    chunks: list[Chunk],
+) -> DocumentChunksResponse:
+    return DocumentChunksResponse(
+        document_id=document.id,
+        status=document.status,
+        chunks=[
+            ChunkResponse(
+                id=chunk.id,
+                document_content_id=chunk.document_content_id,
+                content_sequence=chunk.document_content.sequence,
+                sequence=chunk.sequence,
+                text=chunk.text,
+                start_offset=chunk.start_offset,
+                end_offset=chunk.end_offset,
+                source_type=chunk.document_content.source_type,
+                source_start=chunk.document_content.source_start,
+                source_end=chunk.document_content.source_end,
+            )
+            for chunk in chunks
+        ],
+    )
 
 
 @router.post(
@@ -154,6 +199,59 @@ def get_document_contents(
             DocumentContentResponse.model_validate(content) for content in contents
         ],
     )
+
+
+@router.get(
+    "/api/documents/{document_id}/chunks",
+    response_model=DocumentChunksResponse,
+)
+def get_document_chunks(
+    document_id: int,
+    session: DatabaseSession,
+) -> DocumentChunksResponse:
+    result = document_chunking_service.get_document_chunks(session, document_id)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    document, chunks = result
+    return _build_document_chunks_response(document, chunks)
+
+
+@router.post(
+    "/api/documents/{document_id}/chunks",
+    response_model=DocumentChunksResponse,
+)
+def rebuild_document_chunks(
+    document_id: int,
+    session: DatabaseSession,
+) -> DocumentChunksResponse:
+    try:
+        result = document_chunking_service.rebuild_document_chunks(
+            session,
+            document_id,
+        )
+    except document_chunking_service.DocumentNotReadyForChunkingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except document_chunking_service.DocumentChunkingPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document chunks could not be saved",
+        ) from exc
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    document, chunks = result
+    return _build_document_chunks_response(document, chunks)
 
 
 @router.post(

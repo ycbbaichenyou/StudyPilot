@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.document_processing.parsers import PARSERS_BY_FILE_TYPE
 from app.document_processing.schemas import ParsedTextUnit
-from app.models import Document, DocumentContent, DocumentStatus
+from app.models import Chunk, Document, DocumentContent, DocumentStatus
 
 
 def create_knowledge_base(client: TestClient) -> int:
@@ -158,6 +158,14 @@ def test_successful_reparse_replaces_old_content_and_clears_error(
             source_start=1,
             source_end=1,
         )
+        old_content.chunks.append(
+            Chunk(
+                sequence=0,
+                text="Stale content",
+                start_offset=0,
+                end_offset=len("Stale content"),
+            )
+        )
         session.add(old_content)
         session.commit()
 
@@ -180,6 +188,7 @@ def test_successful_reparse_replaces_old_content_and_clears_error(
             "Fresh first",
             "Fresh second",
         ]
+        assert list(session.scalars(select(Chunk)).all()) == []
         document = session.get(Document, document_id)
         assert document is not None
         assert document.parsed_at is not None
@@ -203,9 +212,17 @@ def test_content_transaction_failure_rolls_back_partial_replacement(
             source_start=1,
             source_end=1,
         )
+        old_chunk = Chunk(
+            document_content=old_content,
+            sequence=0,
+            text="Last complete parse",
+            start_offset=0,
+            end_offset=len("Last complete parse"),
+        )
         session.add(old_content)
         session.commit()
         old_content_id = old_content.id
+        old_chunk_id = old_chunk.id
 
     def duplicate_sequences(_: Path) -> list[ParsedTextUnit]:
         return [
@@ -233,6 +250,9 @@ def test_content_transaction_failure_rolls_back_partial_replacement(
         assert [(content.id, content.text) for content in contents] == [
             (old_content_id, "Last complete parse")
         ]
+        assert [
+            (chunk.id, chunk.text) for chunk in session.scalars(select(Chunk)).all()
+        ] == [(old_chunk_id, "Last complete parse")]
         document = session.get(Document, document_id)
         assert document is not None
         assert document.status == DocumentStatus.PARSE_FAILED.value

@@ -7,7 +7,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.database import Base, create_db_engine, get_db
+from app.database import Base, create_db_engine, get_db, init_db
 from app.main import create_app
 from app.services.documents import get_upload_directory
 
@@ -18,7 +18,7 @@ def test_engine() -> Generator[Engine, None, None]:
         "sqlite://",
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(bind=engine)
+    init_db(engine, create_tables=True)
     try:
         yield engine
     finally:

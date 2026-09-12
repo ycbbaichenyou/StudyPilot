@@ -72,9 +72,19 @@ def get_db() -> Generator[Session, None, None]:
         yield session
 
 
-def init_db(db_engine: Engine = engine) -> None:
+def init_db(
+    db_engine: Engine = engine,
+    *,
+    create_tables: bool = False,
+) -> None:
+    """Prepare the database location without bypassing Alembic migrations.
+
+    Application startup uses the default behavior. Tests that need an isolated
+    schema may explicitly opt in to SQLAlchemy's ``create_all()`` behavior.
+    """
     database_path = db_engine.url.database
     if database_path and database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
 
-    get_model_metadata().create_all(bind=db_engine)
+    if create_tables:
+        get_model_metadata().create_all(bind=db_engine)
