@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Document
+from app.models import Document, DocumentContent
 
 
 logger = logging.getLogger(__name__)
@@ -122,6 +122,27 @@ def list_documents(session: Session, knowledge_base_id: int) -> list[Document]:
         .order_by(Document.id)
     )
     return list(session.scalars(statement).all())
+
+
+def get_document(session: Session, document_id: int) -> Document | None:
+    return session.get(Document, document_id)
+
+
+def get_document_contents(
+    session: Session,
+    document_id: int,
+) -> tuple[Document, list[DocumentContent]] | None:
+    document = get_document(session, document_id)
+    if document is None:
+        return None
+
+    statement = (
+        select(DocumentContent)
+        .where(DocumentContent.document_id == document_id)
+        .order_by(DocumentContent.sequence.asc())
+    )
+    contents = list(session.scalars(statement).all())
+    return document, contents
 
 
 def delete_stored_file(

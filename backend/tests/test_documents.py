@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import Document, KnowledgeBase
+from app.models import Document, DocumentContent, DocumentStatus, KnowledgeBase
 from app.services import documents as document_service
 from app.services.documents import MAX_FILE_SIZE
 
@@ -95,6 +95,159 @@ def test_list_documents_returns_only_requested_knowledge_base(
 
     assert response.status_code == 200
     assert response.json() == [first, second]
+
+
+def test_get_document_returns_current_document(client: TestClient) -> None:
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+
+    response = client.get(f"/api/documents/{uploaded['id']}")
+
+    assert response.status_code == 200
+    assert response.json() == uploaded
+
+
+def test_get_missing_document_returns_404(client: TestClient) -> None:
+    response = client.get("/api/documents/999")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Document not found"}
+
+
+def test_get_document_contents_returns_contents_in_sequence_order(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+    document_id = uploaded["id"]
+
+    with test_session_factory() as session:
+        document = session.get(Document, document_id)
+        assert document is not None
+        document.status = DocumentStatus.PARSED.value
+        contents = [
+            DocumentContent(
+                document_id=document_id,
+                sequence=2,
+                text="Third line",
+                source_type="line_range",
+                source_start=3,
+                source_end=3,
+            ),
+            DocumentContent(
+                document_id=document_id,
+                sequence=0,
+                text="First line",
+                source_type="line_range",
+                source_start=1,
+                source_end=1,
+            ),
+            DocumentContent(
+                document_id=document_id,
+                sequence=1,
+                text="Second line",
+                source_type="line_range",
+                source_start=2,
+                source_end=2,
+            ),
+        ]
+        session.add_all(contents)
+        session.commit()
+        content_ids = {content.sequence: content.id for content in contents}
+
+    response = client.get(f"/api/documents/{document_id}/contents")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["document_id"] == document_id
+    assert body["status"] == DocumentStatus.PARSED.value
+    assert [content["sequence"] for content in body["contents"]] == [0, 1, 2]
+    assert body["contents"] == [
+        {
+            "id": content_ids[0],
+            "sequence": 0,
+            "text": "First line",
+            "source_type": "line_range",
+            "source_start": 1,
+            "source_end": 1,
+        },
+        {
+            "id": content_ids[1],
+            "sequence": 1,
+            "text": "Second line",
+            "source_type": "line_range",
+            "source_start": 2,
+            "source_end": 2,
+        },
+        {
+            "id": content_ids[2],
+            "sequence": 2,
+            "text": "Third line",
+            "source_type": "line_range",
+            "source_start": 3,
+            "source_end": 3,
+        },
+    ]
+
+
+def test_get_pending_document_contents_returns_empty_list(
+    client: TestClient,
+) -> None:
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+
+    response = client.get(f"/api/documents/{uploaded['id']}/contents")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "document_id": uploaded["id"],
+        "status": DocumentStatus.PENDING.value,
+        "contents": [],
+    }
+
+
+def test_get_parse_failed_document_contents_returns_existing_contents(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+    document_id = uploaded["id"]
+
+    with test_session_factory() as session:
+        document = session.get(Document, document_id)
+        assert document is not None
+        document.status = DocumentStatus.PARSE_FAILED.value
+        document.parse_error = "Latest parse failed"
+        session.add(
+            DocumentContent(
+                document_id=document_id,
+                sequence=0,
+                text="Last complete parse",
+                source_type="line_range",
+                source_start=1,
+                source_end=1,
+            )
+        )
+        session.commit()
+
+    response = client.get(f"/api/documents/{document_id}/contents")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["document_id"] == document_id
+    assert body["status"] == DocumentStatus.PARSE_FAILED.value
+    assert [content["text"] for content in body["contents"]] == [
+        "Last complete parse"
+    ]
+
+
+def test_get_contents_for_missing_document_returns_404(client: TestClient) -> None:
+    response = client.get("/api/documents/999/contents")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Document not found"}
 
 
 def test_upload_to_missing_knowledge_base_returns_404(

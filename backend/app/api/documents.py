@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.api.knowledge_bases import get_existing_knowledge_base
 from app.database import get_db
 from app.document_processing.exceptions import DocumentParsingPersistenceError
-from app.models import Document
+from app.models import Document, DocumentContent
 from app.services import document_parsing as document_parsing_service
 from app.services import documents as document_service
 
@@ -50,6 +50,23 @@ class DocumentResponse(BaseModel):
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+
+
+class DocumentContentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    sequence: int
+    text: str
+    source_type: str
+    source_start: int
+    source_end: int
+
+
+class DocumentContentsResponse(BaseModel):
+    document_id: int
+    status: str
+    contents: list[DocumentContentResponse]
 
 
 @router.post(
@@ -95,6 +112,48 @@ def list_documents(
 ) -> list[Document]:
     get_existing_knowledge_base(knowledge_base_id, session)
     return document_service.list_documents(session, knowledge_base_id)
+
+
+@router.get(
+    "/api/documents/{document_id}",
+    response_model=DocumentResponse,
+)
+def get_document(
+    document_id: int,
+    session: DatabaseSession,
+) -> Document:
+    document = document_service.get_document(session, document_id)
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+    return document
+
+
+@router.get(
+    "/api/documents/{document_id}/contents",
+    response_model=DocumentContentsResponse,
+)
+def get_document_contents(
+    document_id: int,
+    session: DatabaseSession,
+) -> DocumentContentsResponse:
+    result = document_service.get_document_contents(session, document_id)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    document, contents = result
+    return DocumentContentsResponse(
+        document_id=document.id,
+        status=document.status,
+        contents=[
+            DocumentContentResponse.model_validate(content) for content in contents
+        ],
+    )
 
 
 @router.post(

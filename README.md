@@ -2,7 +2,7 @@
 
 StudyPilot 是一个供本科生学习和实践 AI 应用开发的项目。
 
-当前仓库已完成 V1 Stage 3-3。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传和文档管理能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline。Chunk、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。
+当前仓库已完成 V1 Stage 4-1。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传、文档管理、文档信息查询和解析内容查询能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline。Chunk、RAG、Embedding、Chroma、LLM 和 Agent 尚未实现。
 
 ## 环境要求
 
@@ -25,6 +25,8 @@ uv run --no-python-downloads uvicorn app.main:app --reload
 
 - 健康检查：`http://127.0.0.1:8000/api/health`
 - 知识库接口：`http://127.0.0.1:8000/api/knowledge-bases`
+- 文档信息查询：`GET http://127.0.0.1:8000/api/documents/{document_id}`
+- 解析内容查询：`GET http://127.0.0.1:8000/api/documents/{document_id}/contents`
 - 文档解析接口：`POST http://127.0.0.1:8000/api/documents/{document_id}/parse`
 - API 文档：`http://127.0.0.1:8000/docs`
 
