@@ -15,7 +15,14 @@ from app.database import (
     get_database_url,
 )
 from app.main import create_app
-from app.models import Chunk, Document, DocumentContent, DocumentStatus, KnowledgeBase
+from app.models import (
+    Chunk,
+    Document,
+    DocumentContent,
+    DocumentEmbeddingStatus,
+    DocumentStatus,
+    KnowledgeBase,
+)
 
 
 def test_default_database_url_uses_stable_absolute_path(
@@ -119,6 +126,10 @@ def test_document_content_orm_relationship_and_fields(
         assert document.status == DocumentStatus.PENDING.value
         assert document.parse_error is None
         assert document.parsed_at is None
+        assert document.embedding_status == DocumentEmbeddingStatus.PENDING.value
+        assert document.embedding_error is None
+        assert document.embedded_at is None
+        assert document.embedding_generation_id is None
 
 
 def test_chunk_orm_relationship_and_fields(

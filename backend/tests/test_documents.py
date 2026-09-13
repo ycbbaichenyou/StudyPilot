@@ -54,6 +54,10 @@ def test_pdf_upload_creates_record_and_saved_file(
     assert body["file_type"] == "pdf"
     assert body["file_size"] == len(b"%PDF-1.7 test content")
     assert body["status"] == "pending"
+    assert body["embedding_status"] == "pending"
+    assert body["embedding_error"] is None
+    assert body["embedded_at"] is None
+    assert body["embedding_generation_id"] is None
 
     stored_path = upload_directory / body["filename"]
     assert stored_path.is_file()

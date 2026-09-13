@@ -25,6 +25,13 @@ class DocumentStatus(StrEnum):
     PARSE_FAILED = "parse_failed"
 
 
+class DocumentEmbeddingStatus(StrEnum):
+    PENDING = "pending"
+    EMBEDDING = "embedding"
+    EMBEDDED = "embedded"
+    EMBEDDING_FAILED = "embedding_failed"
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -46,6 +53,20 @@ class Document(Base):
     parse_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     parsed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False),
+        nullable=True,
+    )
+    embedding_status: Mapped[str] = mapped_column(
+        String(50),
+        default=DocumentEmbeddingStatus.PENDING.value,
+        nullable=False,
+    )
+    embedding_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False),
+        nullable=True,
+    )
+    embedding_generation_id: Mapped[str | None] = mapped_column(
+        String(32),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(

@@ -8,6 +8,7 @@ venv/
 
 # Local application data
 backend/data/*.db*
+backend/data/chroma/
 backend/data/uploads/
 
 # Environment variables

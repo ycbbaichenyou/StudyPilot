@@ -4,9 +4,9 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库已完成 V1 Stage 4-2。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库已完成 V1 Stage 5-1。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。Stage 5-1 增加文档 Embedding 状态、DashScope `text-embedding-v4` 适配器、Chroma 持久化边界，以及显式创建和查询 Embedding 状态的 API。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
 
-Embedding、Chroma、检索、RAG、LLM 和 Agent 尚未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，两者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析和分块接口外的后续业务接口、模型供应商、嵌入模型和界面细节仍需在对应任务中按最小需求确定。
+检索、RAG、LLM 和 Agent 尚未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，Chroma 保存 Chunk 的向量副本，三者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析、分块和 Embedding 接口外的后续业务接口、检索参数、生成模型和界面细节仍需在对应任务中按最小需求确定。
 
 ## 2. V1 目标
 
@@ -107,6 +107,10 @@ Stage 4-2 的分块器只接收单个 `DocumentContent.text`，不读取原文�
 
 分块是解析之后的独立同步步骤：只有状态为 `parsed` 的文档可以显式创建或重建 Chunk。服务先在内存中生成全部分块结果，再在一个事务中原子替换旧 Chunk；失败时保留上一次完整结果。成功重新解析会通过外键级联删除由旧 DocumentContent 派生的 Chunk，解析失败和事务回滚则保留原有内容与 Chunk。
 
+Embedding 是分块之后的独立同步步骤，不由上传、解析或分块自动触发。只有解析状态为 `parsed` 且至少已有一个 Chunk 的文档可以显式创建 Embedding。DashScope 适配器使用原生 HTTP API 调用默认模型 `text-embedding-v4`，每批最多发送 10 个 Chunk，显式指定 `text_type=document`、1024 维稠密向量，并按响应中的 `text_index` 恢复输入顺序。API Key 只从环境变量读取。
+
+跨 SQLite 与 Chroma 的写入使用 generation 隔离。服务先确认 Document 存在、状态为 `parsed` 且已有 Chunk，再记录 `embedding` 状态并打开 Chroma；因此 Chroma 初始化或配置失败也会进入统一的 `embedding_failed` 状态流程。每次尝试生成新的 32 位 `generation_id`，在内存中取得全部向量后，再以 `generation_id:chunk_id` 作为 Chroma record id 写入新一代记录。写入后必须从 Chroma 重新读取候选 generation，并验证 record 数量和 `chunk_id` 集合与 SQLite 当前 Chunk 完全一致；只有验证和 SQLite 完成状态提交都成功后，`Document.embedding_generation_id` 才指向新一代。失败 generation 会被尽力清理，即使清理本身失败，它也不会成为 SQLite 指向的有效 generation，上一代有效 generation 也不会被删除。成功重建 Embedding 后才会清理上一代记录。Stage 5-1 不实现文档删除或重新解析时的 Chroma 同步。
+
 ### 5.5 RAG 核心模块
 
 核心 RAG 过程拆为可观察的普通步骤：
@@ -136,14 +140,14 @@ Stage 4-2 的分块器只接收单个 `DocumentContent.text`，不读取原文�
 ### SQLite 保存
 
 - `KnowledgeBase`：整数主键、名称、可空描述和创建/更新时间。
-- `Document`：整数主键、所属知识库、文件名、原始文件名、文件类型、文件大小、字符串解析状态、可空解析错误、可空解析完成时间和创建/更新时间。解析状态统一为 `pending`、`parsing`、`parsed` 或 `parse_failed`，数据库继续使用字符串列。
+- `Document`：整数主键、所属知识库、文件名、原始文件名、文件类型、文件大小、字符串解析状态、可空解析错误、可空解析完成时间、Embedding 状态、可空 Embedding 错误、可空 Embedding 完成时间、可空有效 generation id 和创建/更新时间。解析状态统一为 `pending`、`parsing`、`parsed` 或 `parse_failed`；Embedding 状态统一为 `pending`、`embedding`、`embedded` 或 `embedding_failed`，数据库继续使用字符串列。
 - `DocumentContent`：整数主键、所属文档、有序序号、解析文本、来源类型、来源起止位置和创建时间。它保存解析阶段的文本单元，不是后续用于向量检索的 Chunk。
 - `Chunk`：整数主键、所属 DocumentContent、在该内容内的有序序号、文本、字符起止 offset 和创建时间。一个 Chunk 只属于一个 DocumentContent；来源类型及页码、段落或行号继续以 DocumentContent 为事实来源。
 - 后续业务明确需要的其他结构化数据。
 
 每个 `Document` 必须通过非空外键 `knowledge_base_id` 属于一个 `KnowledgeBase`。所有 SQLite Engine 通过同一个创建函数配置，并在每个连接上启用外键约束。默认 SQLite 文件位于 `backend/data/studypilot.db`；设置 `STUDYPILOT_DATABASE_URL` 后，应用与 Alembic 都使用该环境变量指定的 SQLite URL。
 
-从 Stage 3-1 开始，数据库结构版本由 Alembic migration 管理。`0001_stage_2_baseline` 完整描述 Stage 2 已有结构：全新数据库可以通过 `alembic upgrade head` 创建；已有 Stage 2 数据库使用 `alembic stamp 0001_stage_2_baseline` 接入版本管理，不能对已有业务表重复执行基线 DDL。`0002_stage_3_2_document_content` 为 `documents` 增加解析字段并创建 `document_contents` 表；`0003_stage_4_2_chunk` 创建 `chunks` 表及其外键、索引和完整性约束。应用启动时的 `init_db()` 默认只准备数据库目录，不创建或升级 schema，正常运行前必须执行 `alembic upgrade head`。只有测试创建隔离数据库时，才可以显式调用 `init_db(create_tables=True)` 使用当前 SQLAlchemy metadata 建表。未来模型变化必须先生成并审查 migration，再通过 Alembic 升级。
+从 Stage 3-1 开始，数据库结构版本由 Alembic migration 管理。`0001_stage_2_baseline` 完整描述 Stage 2 已有结构：全新数据库可以通过 `alembic upgrade head` 创建；已有 Stage 2 数据库使用 `alembic stamp 0001_stage_2_baseline` 接入版本管理，不能对已有业务表重复执行基线 DDL。`0002_stage_3_2_document_content` 为 `documents` 增加解析字段并创建 `document_contents` 表；`0003_stage_4_2_chunk` 创建 `chunks` 表及其外键、索引和完整性约束；`0004_stage_5_1_document_embedding` 为 `documents` 增加 Embedding 状态和有效 generation 字段。应用启动时的 `init_db()` 默认只准备数据库目录，不创建或升级 schema，正常运行前必须执行 `alembic upgrade head`。只有测试创建隔离数据库时，才可以显式调用 `init_db(create_tables=True)` 使用当前 SQLAlchemy metadata 建表。未来模型变化必须先生成并审查 migration，再通过 Alembic 升级。
 
 SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在序列化边界将这些时间重新标记为 UTC aware datetime，因此 JSON 时间戳必须包含 `Z` 或 `+00:00`。
 
@@ -159,6 +163,8 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 - `GET /api/documents/{document_id}/contents`：查询文档状态及解析文本单元，内容显式按 `sequence` 升序返回；尚未解析时返回空列表，解析失败时仍返回已有内容。
 - `GET /api/documents/{document_id}/chunks`：查询当前已有 Chunk，不触发创建或重建；结果按 DocumentContent 和 Chunk 的 `sequence` 升序返回。
 - `POST /api/documents/{document_id}/chunks`：为已解析文档同步创建或原子重建 Chunk；文档不存在返回 404，状态不是 `parsed` 返回 409。
+- `GET /api/documents/{document_id}/embedding`：只查询当前 Embedding 状态、错误、完成时间和有效 generation id，不触发向量化。
+- `POST /api/documents/{document_id}/embedding`：为已解析且已有 Chunk 的文档同步创建或重建 Embedding；文档不存在返回 404，尚未解析或没有 Chunk 返回 409。模型或 Chroma 操作失败返回 200，并以 `embedding_failed` 和安全错误信息明确表示失败。
 - `DELETE /api/documents/{document_id}`：删除 `Document` 记录及对应的磁盘文件。
 - `POST /api/documents/{document_id}/parse`：同步解析原始文件并保存 `DocumentContent`；文档不存在返回 404，解析失败返回 200 和状态为 `parse_failed` 的文档。
 
@@ -166,13 +172,14 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 
 ### Chroma 保存
 
-- 文本块内容或检索所需的文本表示。
-- 文本块向量。
-- 用于过滤和来源追踪的最小元数据。
+- 每个 Chunk 对应一个 Chroma record；record id 为 `generation_id:chunk_id`。
+- Chunk 文本和显式传入的稠密向量；Chroma 不配置或调用 embedding function。
+- collection 显式使用 cosine distance；名称由 schema version、provider、model 和 dimensions 共同生成，metadata 同时保存并校验这些配置，避免不同向量空间混入同一 collection。
+- `generation_id`、`document_id`、`chunk_id`、`document_content_id`、顺序、offset 和来源位置等检索溯源所需元数据。
 
 ### 跨存储关联
 
-未来写入 Chroma 时，SQLite 文档记录与向量记录必须共享稳定的 `document_id`。`Chunk.id` 可作为稳定的 `chunk_id`；通过 Chunk 对应的 DocumentContent 可以取得文档标识和适用的来源位置，例如 PDF 页码或 DOCX 段落序号。Stage 4-2 尚不写入或调用 Chroma。
+SQLite 文档记录与向量记录共享稳定的 `document_id`，`Chunk.id` 作为稳定的 `chunk_id`。通过 Chunk 对应的 DocumentContent 取得文档标识和适用的来源位置，例如 PDF 页码或 DOCX 段落序号。SQLite 只保存当前有效的 `embedding_generation_id`，不保存向量；后续检索必须同时使用 `document_id` 和有效 generation 约束，不能把未激活或过期 generation 当成有效数据。
 
 不要在两个存储中无理由复制完整业务数据。SQLite 是结构化业务状态的事实来源；Chroma 是向量检索数据的事实来源。
 
@@ -216,7 +223,7 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 - API Key、令牌和其他敏感值只从环境变量读取，本地由未提交的 `.env` 提供。
 - 可提交的 `.env.example` 只能包含变量名和安全占位值。
 - 前端构建产物中的环境变量对浏览器可见，因此任何秘密都只能保存在后端。
-- 数据库地址、Chroma 持久化位置、模型名称和允许的前端来源等可变配置由环境管理，不散落在业务代码中。Stage 1 使用可选的 `STUDYPILOT_DATABASE_URL` 覆盖默认 SQLite 地址，并只通过 Python 标准库读取进程环境。
+- 数据库地址、Chroma 持久化位置、模型名称和允许的前端来源等可变配置由环境管理，不散落在业务代码中。SQLite 使用可选的 `STUDYPILOT_DATABASE_URL`；Chroma 使用可选的 `STUDYPILOT_CHROMA_PATH`；DashScope 使用必需的 `DASHSCOPE_API_KEY` 和可选的 `DASHSCOPE_EMBEDDING_URL`、`STUDYPILOT_EMBEDDING_MODEL`。项目只通过 Python 标准库读取进程环境。
 - 日志和错误响应不得包含密钥、完整提示词中的敏感内容、内部堆栈或不必要的本地绝对路径。
 - 上传文件必须在进入解析器前检查允许的类型和必要的大小边界；具体限制值由实现任务确定。
 
@@ -259,7 +266,7 @@ V1 的测试应覆盖最重要且容易出错的边界：
 - 文本清洗、分块边界和元数据继承。
 - SQLite 数据访问与状态变化。
 - Alembic migration 与 SQLAlchemy metadata 是否保持一致。
-- Chroma 写入、检索和稳定标识关联。
+- Chroma 显式向量写入、generation 清理和稳定标识关联。
 - 无结果、解析失败、存储失败和模型失败等错误路径。
 - FastAPI 请求校验、响应结构和关键用例。
 - 前端关键交互状态与前后端契约。
@@ -280,7 +287,7 @@ V1 的测试应覆盖最重要且容易出错的边界：
 
 以下事项当前没有足够需求，不应提前猜定：
 
-- 生成模型、嵌入模型及其供应商。
+- 生成模型及其供应商。
 - 检索数量和排序策略。
 - 除当前健康检查、知识库和文档管理接口外，后续业务 API 的具体路径、字段和版本策略。
 - 用户、课程、会话等业务实体及数据模型。

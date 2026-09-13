@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -17,15 +18,23 @@ from sqlalchemy.orm import Session
 from app.api.knowledge_bases import get_existing_knowledge_base
 from app.database import get_db
 from app.document_processing.exceptions import DocumentParsingPersistenceError
+from app.embeddings import DashScopeTextEmbedding, get_embedding_model
 from app.models import Chunk, Document
 from app.services import document_chunking as document_chunking_service
+from app.services import document_embedding as document_embedding_service
 from app.services import document_parsing as document_parsing_service
 from app.services import documents as document_service
+from app.stores import ChromaVectorStore, get_vector_store_factory
 
 
 router = APIRouter(tags=["documents"])
 DatabaseSession = Annotated[Session, Depends(get_db)]
 UploadDirectory = Annotated[Path, Depends(document_service.get_upload_directory)]
+EmbeddingModel = Annotated[DashScopeTextEmbedding, Depends(get_embedding_model)]
+VectorStoreFactory = Annotated[
+    Callable[[], ChromaVectorStore],
+    Depends(get_vector_store_factory),
+]
 
 
 class DocumentResponse(BaseModel):
@@ -40,10 +49,20 @@ class DocumentResponse(BaseModel):
     status: str
     parse_error: str | None
     parsed_at: datetime | None
+    embedding_status: str
+    embedding_error: str | None
+    embedded_at: datetime | None
+    embedding_generation_id: str | None
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("parsed_at", "created_at", "updated_at", mode="after")
+    @field_validator(
+        "parsed_at",
+        "embedded_at",
+        "created_at",
+        "updated_at",
+        mode="after",
+    )
     @classmethod
     def mark_timestamp_as_utc(cls, value: datetime | None) -> datetime | None:
         if value is None:
@@ -89,6 +108,19 @@ class DocumentChunksResponse(BaseModel):
     chunks: list[ChunkResponse]
 
 
+class DocumentEmbeddingResponse(BaseModel):
+    document_id: int
+    embedding_status: str
+    embedding_error: str | None
+    embedded_at: datetime | None
+    generation_id: str | None
+
+    @field_validator("embedded_at", mode="after")
+    @classmethod
+    def mark_embedded_at_as_utc(cls, value: datetime | None) -> datetime | None:
+        return DocumentResponse.mark_timestamp_as_utc(value)
+
+
 def _build_document_chunks_response(
     document: Document,
     chunks: list[Chunk],
@@ -111,6 +143,18 @@ def _build_document_chunks_response(
             )
             for chunk in chunks
         ],
+    )
+
+
+def _build_document_embedding_response(
+    document: Document,
+) -> DocumentEmbeddingResponse:
+    return DocumentEmbeddingResponse(
+        document_id=document.id,
+        embedding_status=document.embedding_status,
+        embedding_error=document.embedding_error,
+        embedded_at=document.embedded_at,
+        generation_id=document.embedding_generation_id,
     )
 
 
@@ -252,6 +296,62 @@ def rebuild_document_chunks(
 
     document, chunks = result
     return _build_document_chunks_response(document, chunks)
+
+
+@router.get(
+    "/api/documents/{document_id}/embedding",
+    response_model=DocumentEmbeddingResponse,
+)
+def get_document_embedding(
+    document_id: int,
+    session: DatabaseSession,
+) -> DocumentEmbeddingResponse:
+    document = document_embedding_service.get_document_embedding_status(
+        session,
+        document_id,
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+    return _build_document_embedding_response(document)
+
+
+@router.post(
+    "/api/documents/{document_id}/embedding",
+    response_model=DocumentEmbeddingResponse,
+)
+def embed_document(
+    document_id: int,
+    session: DatabaseSession,
+    embedding_model: EmbeddingModel,
+    vector_store_factory: VectorStoreFactory,
+) -> DocumentEmbeddingResponse:
+    try:
+        document = document_embedding_service.embed_document(
+            session,
+            document_id,
+            embedding_model=embedding_model,
+            vector_store_factory=vector_store_factory,
+        )
+    except document_embedding_service.DocumentNotReadyForEmbeddingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except document_embedding_service.DocumentEmbeddingPersistenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document embedding status could not be saved",
+        ) from exc
+
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+    return _build_document_embedding_response(document)
 
 
 @router.post(
