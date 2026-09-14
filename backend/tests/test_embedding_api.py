@@ -40,8 +40,15 @@ from app.stores.chroma import (
 
 
 class ApiEmbeddingModel:
+    def __init__(self) -> None:
+        self.document_requests: list[list[str]] = []
+
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        self.document_requests.append(list(texts))
         return [[float(len(text)), 1.0, 2.0] for text in texts]
+
+    def embed_query(self, query: str) -> list[float]:
+        raise AssertionError(f"Document embedding must not embed a query: {query}")
 
 
 class ApiFailingEmbeddingModel:
@@ -134,7 +141,8 @@ def test_post_embedding_builds_and_reports_active_generation(
     test_session_factory: sessionmaker[Session],
 ) -> None:
     vector_store = ApiVectorStore()
-    client.app.dependency_overrides[get_embedding_model] = ApiEmbeddingModel
+    embedding_model = ApiEmbeddingModel()
+    client.app.dependency_overrides[get_embedding_model] = lambda: embedding_model
     client.app.dependency_overrides[get_vector_store_factory] = lambda: (
         lambda: vector_store
     )
@@ -154,6 +162,7 @@ def test_post_embedding_builds_and_reports_active_generation(
     assert embedded_at.utcoffset() is not None
     assert len(vector_store.records) == 1
     assert vector_store.records[0].metadata["generation_id"] == body["generation_id"]
+    assert embedding_model.document_requests == [["First"]]
 
     get_response = client.get(f"/api/documents/{document_id}/embedding")
     assert get_response.json() == body

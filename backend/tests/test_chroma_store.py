@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import chromadb
 import pytest
@@ -8,6 +9,7 @@ from app.stores.chroma import (
     ChromaCollectionConfigurationError,
     ChromaRecord,
     ChromaVectorStore,
+    ChromaVectorStoreError,
     build_collection_name,
 )
 
@@ -17,17 +19,35 @@ def _record(
     chunk_id: int,
     *,
     document_id: int = 1,
+    embedding: list[float] | None = None,
 ) -> ChromaRecord:
     return ChromaRecord(
         id=f"{generation_id}:{chunk_id}",
         text=f"Chunk {chunk_id}",
-        embedding=[0.1, 0.2, 0.3],
+        embedding=embedding or [0.1, 0.2, 0.3],
         metadata={
             "generation_id": generation_id,
             "document_id": document_id,
             "chunk_id": chunk_id,
         },
     )
+
+
+class QueryCollection:
+    def __init__(
+        self,
+        result: dict[str, Any] | None = None,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.result = result
+        self.error = error
+
+    def query(self, **_: object) -> dict[str, Any]:
+        if self.error is not None:
+            raise self.error
+        assert self.result is not None
+        return self.result
 
 
 def test_chroma_store_persists_explicit_embeddings_one_record_per_chunk(
@@ -59,6 +79,175 @@ def test_chroma_store_persists_explicit_embeddings_one_record_per_chunk(
     summary = store.get_generation_summary("generation-a")
     assert summary.record_count == 2
     assert summary.chunk_ids == frozenset({10, 11})
+
+
+def test_chroma_store_searches_by_cosine_distance(tmp_path: Path) -> None:
+    store = ChromaVectorStore(
+        path=tmp_path / "chroma",
+        dimensions=3,
+    )
+    store.add_records(
+        [
+            _record("active", 1, embedding=[1.0, 0.0, 0.0]),
+            _record("active", 2, embedding=[0.0, 1.0, 0.0]),
+            _record("active", 3, embedding=[-1.0, 0.0, 0.0]),
+        ]
+    )
+
+    hits = store.search(
+        [1.0, 0.0, 0.0],
+        allowed_record_ids={"active:1", "active:2", "active:3"},
+        top_k=3,
+    )
+
+    assert [hit.record_id for hit in hits] == ["active:1", "active:2", "active:3"]
+    assert [hit.document_id for hit in hits] == [1, 1, 1]
+    assert [hit.chunk_id for hit in hits] == [1, 2, 3]
+    assert [hit.generation_id for hit in hits] == ["active", "active", "active"]
+    assert [hit.distance for hit in hits] == pytest.approx([0.0, 1.0, 2.0])
+
+
+def test_chroma_search_is_limited_to_allowed_record_ids(tmp_path: Path) -> None:
+    store = ChromaVectorStore(path=tmp_path / "chroma", dimensions=3)
+    store.add_records(
+        [
+            _record("old", 1, embedding=[1.0, 0.0, 0.0]),
+            _record("active", 2, embedding=[0.0, 1.0, 0.0]),
+        ]
+    )
+
+    hits = store.search(
+        [1.0, 0.0, 0.0],
+        allowed_record_ids={"active:2"},
+        top_k=5,
+    )
+
+    assert [hit.record_id for hit in hits] == ["active:2"]
+
+
+def test_chroma_search_respects_top_k(tmp_path: Path) -> None:
+    store = ChromaVectorStore(path=tmp_path / "chroma", dimensions=3)
+    store.add_records(
+        [
+            _record("active", 1, embedding=[1.0, 0.0, 0.0]),
+            _record("active", 2, embedding=[0.8, 0.2, 0.0]),
+            _record("active", 3, embedding=[0.0, 1.0, 0.0]),
+        ]
+    )
+
+    hits = store.search(
+        [1.0, 0.0, 0.0],
+        allowed_record_ids={"active:1", "active:2", "active:3"},
+        top_k=2,
+    )
+
+    assert [hit.record_id for hit in hits] == ["active:1", "active:2"]
+
+
+def test_chroma_search_returns_empty_when_allowed_records_are_absent(
+    tmp_path: Path,
+) -> None:
+    store = ChromaVectorStore(path=tmp_path / "chroma", dimensions=3)
+
+    assert (
+        store.search(
+            [1.0, 0.0, 0.0],
+            allowed_record_ids={"missing:1"},
+            top_k=5,
+        )
+        == []
+    )
+
+
+def test_search_store_does_not_create_a_missing_collection(tmp_path: Path) -> None:
+    client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
+
+    with pytest.raises(
+        ChromaVectorStoreError,
+        match="embedding collection does not exist",
+    ):
+        ChromaVectorStore(
+            path=tmp_path / "chroma",
+            dimensions=3,
+            create_if_missing=False,
+            client=client,
+        )
+
+    assert client.list_collections() == []
+
+
+def test_chroma_search_rejects_invalid_metadata(tmp_path: Path) -> None:
+    store = ChromaVectorStore(path=tmp_path / "chroma", dimensions=3)
+    store._collection = QueryCollection(
+        {
+            "ids": [["active:1"]],
+            "metadatas": [
+                [{"document_id": 1, "chunk_id": 2, "generation_id": "active"}]
+            ],
+            "distances": [[0.1]],
+        }
+    )
+
+    with pytest.raises(ChromaVectorStoreError, match="search could not be completed"):
+        store.search(
+            [1.0, 0.0, 0.0],
+            allowed_record_ids={"active:1"},
+            top_k=1,
+        )
+
+
+def test_chroma_search_rejects_non_finite_distance(tmp_path: Path) -> None:
+    store = ChromaVectorStore(path=tmp_path / "chroma", dimensions=3)
+    store._collection = QueryCollection(
+        {
+            "ids": [["active:1"]],
+            "metadatas": [
+                [{"document_id": 1, "chunk_id": 1, "generation_id": "active"}]
+            ],
+            "distances": [[float("nan")]],
+        }
+    )
+
+    with pytest.raises(ChromaVectorStoreError, match="search could not be completed"):
+        store.search(
+            [1.0, 0.0, 0.0],
+            allowed_record_ids={"active:1"},
+            top_k=1,
+        )
+
+
+def test_chroma_search_converts_chroma_errors(tmp_path: Path) -> None:
+    store = ChromaVectorStore(path=tmp_path / "chroma", dimensions=3)
+    store._collection = QueryCollection(error=RuntimeError("raw Chroma error"))
+
+    with pytest.raises(ChromaVectorStoreError, match="search could not be completed"):
+        store.search(
+            [1.0, 0.0, 0.0],
+            allowed_record_ids={"active:1"},
+            top_k=1,
+        )
+
+
+@pytest.mark.parametrize(
+    "query_embedding",
+    [
+        [1.0, 2.0],
+        [1.0, True, 3.0],
+        [1.0, float("inf"), 3.0],
+    ],
+)
+def test_chroma_search_validates_query_embedding(
+    tmp_path: Path,
+    query_embedding: list[object],
+) -> None:
+    store = ChromaVectorStore(path=tmp_path / "chroma", dimensions=3)
+
+    with pytest.raises(ChromaVectorStoreError, match="search could not be completed"):
+        store.search(
+            query_embedding,  # type: ignore[arg-type]
+            allowed_record_ids={"active:1"},
+            top_k=1,
+        )
 
 
 def test_chroma_store_deletes_only_requested_generation(tmp_path: Path) -> None:

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,15 @@ class ChromaRecord:
 class ChromaGenerationSummary:
     record_count: int
     chunk_ids: frozenset[int]
+
+
+@dataclass(frozen=True)
+class ChromaSearchHit:
+    record_id: str
+    document_id: int
+    chunk_id: int
+    generation_id: str
+    distance: float
 
 
 def _collection_component(value: str) -> str:
@@ -84,12 +95,14 @@ class ChromaVectorStore:
         model: str = DEFAULT_MODEL,
         dimensions: int = DEFAULT_DIMENSION,
         schema_version: int = VECTOR_SCHEMA_VERSION,
+        create_if_missing: bool = True,
         client: Any | None = None,
     ) -> None:
         self.provider = provider
         self.model = model
         self.dimensions = dimensions
         self.schema_version = schema_version
+        self._create_if_missing = create_if_missing
         self.collection_name = build_collection_name(
             provider=provider,
             model=model,
@@ -122,6 +135,10 @@ class ChromaVectorStore:
                 embedding_function=None,
             )
         except NotFoundError:
+            if not self._create_if_missing:
+                raise ChromaVectorStoreError(
+                    "The Chroma embedding collection does not exist"
+                )
             return self._client.create_collection(
                 name=self.collection_name,
                 configuration={"hnsw": {"space": DISTANCE_SPACE}},
@@ -198,6 +215,123 @@ class ChromaVectorStore:
                 "Chroma embedding generation could not be verified"
             ) from exc
 
+    def search(
+        self,
+        query_embedding: list[float],
+        *,
+        allowed_record_ids: Collection[str],
+        top_k: int,
+    ) -> list[ChromaSearchHit]:
+        try:
+            if len(query_embedding) != self.dimensions:
+                raise ValueError("query embedding dimensions do not match")
+            validated_embedding: list[float] = []
+            for value in query_embedding:
+                if not isinstance(value, Real) or isinstance(value, bool):
+                    raise TypeError("query embedding must contain numbers")
+                converted = float(value)
+                if not math.isfinite(converted):
+                    raise ValueError("query embedding must be finite")
+                validated_embedding.append(converted)
+
+            if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+                raise ValueError("top_k must be a positive integer")
+
+            allowed_ids = list(allowed_record_ids)
+            if (
+                any(
+                    not isinstance(record_id, str) or not record_id
+                    for record_id in allowed_ids
+                )
+                or len(set(allowed_ids)) != len(allowed_ids)
+            ):
+                raise ValueError("allowed record ids must be unique strings")
+            if not allowed_ids:
+                return []
+
+            result_count = min(top_k, len(allowed_ids))
+            result = self._collection.query(
+                query_embeddings=[validated_embedding],
+                ids=allowed_ids,
+                n_results=result_count,
+                include=["metadatas", "distances"],
+            )
+
+            raw_ids = result.get("ids")
+            raw_metadatas = result.get("metadatas")
+            raw_distances = result.get("distances")
+            if not all(
+                isinstance(value, list) and len(value) == 1
+                for value in (raw_ids, raw_metadatas, raw_distances)
+            ):
+                raise TypeError("Chroma returned an invalid search result shape")
+
+            ids = raw_ids[0]
+            metadatas = raw_metadatas[0]
+            distances = raw_distances[0]
+            if not all(
+                isinstance(value, list) for value in (ids, metadatas, distances)
+            ):
+                raise TypeError("Chroma returned an invalid search result shape")
+            if not (len(ids) == len(metadatas) == len(distances)):
+                raise ValueError("Chroma returned inconsistent search result counts")
+            if len(ids) > result_count:
+                raise ValueError("Chroma returned too many search results")
+
+            allowed_id_set = set(allowed_ids)
+            seen_record_ids: set[str] = set()
+            hits: list[ChromaSearchHit] = []
+            for record_id, metadata, distance in zip(
+                ids,
+                metadatas,
+                distances,
+                strict=True,
+            ):
+                if not isinstance(record_id, str) or record_id in seen_record_ids:
+                    raise ValueError("Chroma returned an invalid record id")
+                if record_id not in allowed_id_set:
+                    raise ValueError("Chroma returned a record outside the allowlist")
+                if not isinstance(metadata, dict):
+                    raise TypeError("Chroma returned invalid record metadata")
+
+                document_id = metadata.get("document_id")
+                chunk_id = metadata.get("chunk_id")
+                generation_id = metadata.get("generation_id")
+                if (
+                    not isinstance(document_id, int)
+                    or isinstance(document_id, bool)
+                    or not isinstance(chunk_id, int)
+                    or isinstance(chunk_id, bool)
+                    or not isinstance(generation_id, str)
+                    or not generation_id
+                    or ":" in generation_id
+                    or record_id != f"{generation_id}:{chunk_id}"
+                ):
+                    raise ValueError("Chroma returned invalid record metadata")
+                if not isinstance(distance, Real) or isinstance(distance, bool):
+                    raise TypeError("Chroma returned an invalid distance")
+                converted_distance = float(distance)
+                if not math.isfinite(converted_distance):
+                    raise ValueError("Chroma returned an invalid distance")
+
+                seen_record_ids.add(record_id)
+                hits.append(
+                    ChromaSearchHit(
+                        record_id=record_id,
+                        document_id=document_id,
+                        chunk_id=chunk_id,
+                        generation_id=generation_id,
+                        distance=converted_distance,
+                    )
+                )
+            return hits
+        except ChromaVectorStoreError:
+            raise
+        except Exception as exc:
+            raise ChromaVectorStoreError(
+                "Chroma search could not be completed"
+            ) from exc
+
     def delete_generation(self, generation_id: str) -> None:
         try:
             self._collection.delete(where={"generation_id": generation_id})
@@ -254,6 +388,22 @@ def get_vector_store() -> ChromaVectorStore:
     )
 
 
+def get_search_vector_store() -> ChromaVectorStore:
+    return ChromaVectorStore(
+        path=get_chroma_path(),
+        provider=EMBEDDING_PROVIDER,
+        model=get_embedding_model_name(),
+        dimensions=DEFAULT_DIMENSION,
+        schema_version=VECTOR_SCHEMA_VERSION,
+        create_if_missing=False,
+    )
+
+
 def get_vector_store_factory() -> Callable[[], ChromaVectorStore]:
     """Return a lazy factory so request preconditions run before Chroma opens."""
     return get_vector_store
+
+
+def get_search_vector_store_factory() -> Callable[[], ChromaVectorStore]:
+    """Return a lazy, read-only-opening factory for Retrieval requests."""
+    return get_search_vector_store

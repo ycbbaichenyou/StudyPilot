@@ -63,6 +63,17 @@ class DashScopeTextEmbedding:
         )
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        return self._embed_texts(texts, text_type="document")
+
+    def embed_query(self, query: str) -> list[float]:
+        return self._embed_texts([query], text_type="query")[0]
+
+    def _embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        text_type: str,
+    ) -> list[list[float]]:
         if not texts:
             return []
         if not self.api_key:
@@ -73,15 +84,20 @@ class DashScopeTextEmbedding:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), MAX_BATCH_SIZE):
             batch = list(texts[start : start + MAX_BATCH_SIZE])
-            vectors.extend(self._embed_batch(batch))
+            vectors.extend(self._embed_batch(batch, text_type=text_type))
         return vectors
 
-    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def _embed_batch(
+        self,
+        texts: list[str],
+        *,
+        text_type: str,
+    ) -> list[list[float]]:
         request_body = {
             "model": self.model,
             "input": {"texts": texts},
             "parameters": {
-                "text_type": "document",
+                "text_type": text_type,
                 "dimension": self.dimension,
                 "output_type": "dense",
             },

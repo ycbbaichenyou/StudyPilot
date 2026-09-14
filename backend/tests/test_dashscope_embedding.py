@@ -70,6 +70,49 @@ def test_dashscope_adapter_batches_requests_and_restores_text_order() -> None:
     assert all(call["timeout"] == 30.0 for call in requests)
 
 
+def test_dashscope_adapter_embeds_query_with_query_text_type() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def opener(request: Request, *, timeout: float) -> JsonResponse:
+        body = json.loads(request.data or b"{}")
+        requests.append({"body": body, "timeout": timeout})
+        return JsonResponse(
+            json.dumps(
+                {
+                    "output": {
+                        "embeddings": [
+                            {"text_index": 0, "embedding": [0.1, 0.2, 0.3]}
+                        ]
+                    }
+                }
+            ).encode()
+        )
+
+    adapter = DashScopeTextEmbedding(
+        api_key="test-key",
+        dimension=3,
+        opener=opener,
+    )
+
+    vector = adapter.embed_query("What is growth rate?")
+
+    assert vector == [0.1, 0.2, 0.3]
+    assert requests == [
+        {
+            "body": {
+                "model": "text-embedding-v4",
+                "input": {"texts": ["What is growth rate?"]},
+                "parameters": {
+                    "text_type": "query",
+                    "dimension": 3,
+                    "output_type": "dense",
+                },
+            },
+            "timeout": 30.0,
+        }
+    ]
+
+
 def test_dashscope_adapter_requires_api_key_without_making_request() -> None:
     def opener(*_: object, **__: object) -> JsonResponse:
         raise AssertionError("No HTTP request should be made")
@@ -81,6 +124,12 @@ def test_dashscope_adapter_requires_api_key_without_making_request() -> None:
         match="DASHSCOPE_API_KEY is not configured",
     ):
         adapter.embed_texts(["text"])
+
+    with pytest.raises(
+        DashScopeEmbeddingConfigurationError,
+        match="DASHSCOPE_API_KEY is not configured",
+    ):
+        adapter.embed_query("query")
 
 
 @pytest.mark.parametrize(
@@ -197,6 +246,22 @@ def test_dashscope_http_error_does_not_expose_response_body_or_api_key() -> None
     message = str(error.value)
     assert message == "DashScope embedding request failed with HTTP 429"
     assert "provider-secret-body" not in message
+    assert "sk-secret-test" not in message
+    assert "/private/internal/path" not in message
+
+
+def test_dashscope_query_embedding_uses_shared_safe_error_handling() -> None:
+    def opener(*_: object, **__: object) -> JsonResponse:
+        raise URLError("provider-secret-reason /private/internal/path")
+
+    adapter = DashScopeTextEmbedding(api_key="sk-secret-test", opener=opener)
+
+    with pytest.raises(DashScopeEmbeddingError) as error:
+        adapter.embed_query("What is growth rate?")
+
+    message = str(error.value)
+    assert message == "DashScope embedding request could not be completed"
+    assert "provider-secret" not in message
     assert "sk-secret-test" not in message
     assert "/private/internal/path" not in message
 

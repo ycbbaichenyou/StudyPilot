@@ -1,4 +1,4 @@
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Collection, Generator
 from datetime import datetime, timedelta
 from io import BytesIO
 import logging
@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import get_db
+from app.embeddings import DashScopeEmbeddingError, get_embedding_model
 from app.models import (
     Chunk,
     Document,
@@ -20,7 +21,14 @@ from app.models import (
 )
 from app.services.embedding_cleanup import SAFE_EMBEDDING_CLEANUP_ERROR
 from app.services import knowledge_bases as knowledge_base_service
-from app.stores import ChromaRecord, ChromaVectorStore, get_vector_store_factory
+from app.stores import (
+    ChromaRecord,
+    ChromaSearchHit,
+    ChromaVectorStore,
+    ChromaVectorStoreError,
+    get_search_vector_store_factory,
+    get_vector_store_factory,
+)
 
 
 class ApiKnowledgeBaseCleanupVectorStore:
@@ -49,6 +57,42 @@ class ApiKnowledgeBaseCleanupVectorStore:
     def get_document_record_count(self, document_id: int) -> int:
         self.events.append(("count", document_id))
         return self.record_counts.get(document_id, 0)
+
+
+class ApiSearchEmbeddingModel:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.queries: list[str] = []
+
+    def embed_query(self, query: str) -> list[float]:
+        self.queries.append(query)
+        if self.error is not None:
+            raise self.error
+        return [1.0, 0.0, 0.0]
+
+
+class ApiSearchVectorStore:
+    def __init__(
+        self,
+        hits: list[ChromaSearchHit],
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.hits = hits
+        self.error = error
+        self.calls: list[tuple[list[float], set[str], int]] = []
+
+    def search(
+        self,
+        query_embedding: list[float],
+        *,
+        allowed_record_ids: Collection[str],
+        top_k: int,
+    ) -> list[ChromaSearchHit]:
+        self.calls.append((query_embedding, set(allowed_record_ids), top_k))
+        if self.error is not None:
+            raise self.error
+        return self.hits
 
 
 def create_knowledge_base(
@@ -696,3 +740,235 @@ def test_delete_knowledge_base_logs_warning_when_file_unlink_fails(
     with test_session_factory() as session:
         assert session.get(KnowledgeBase, knowledge_base_id) is None
         assert session.get(Document, document_id) is None
+
+
+def test_search_knowledge_base_returns_hydrated_results(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = int(created["id"])
+    uploaded = upload_document(client, knowledge_base_id, filename="growth.txt")
+    document_id = int(uploaded["id"])
+    with test_session_factory() as session:
+        content_id, chunk_id = add_document_graph(session, document_id)
+
+    generation_id = "a" * 32
+    embedding_model = ApiSearchEmbeddingModel()
+    vector_store = ApiSearchVectorStore(
+        [
+            ChromaSearchHit(
+                record_id=f"{generation_id}:{chunk_id}",
+                document_id=document_id,
+                chunk_id=chunk_id,
+                generation_id=generation_id,
+                distance=0.125,
+            )
+        ]
+    )
+    client.app.dependency_overrides[get_embedding_model] = lambda: embedding_model
+    client.app.dependency_overrides[get_search_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+
+    response = client.post(
+        f"/api/knowledge-bases/{knowledge_base_id}/search",
+        json={"query": "  What is growth rate?  "},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "query": "What is growth rate?",
+        "results": [
+            {
+                "chunk_id": chunk_id,
+                "document_content_id": content_id,
+                "document_id": document_id,
+                "knowledge_base_id": knowledge_base_id,
+                "text": f"Content for document {document_id}",
+                "distance": 0.125,
+                "original_filename": "growth.txt",
+                "content_sequence": 0,
+                "chunk_sequence": 0,
+                "source_type": "line",
+                "source_start": 1,
+                "source_end": 1,
+                "start_offset": 0,
+                "end_offset": len(f"Content for document {document_id}"),
+            }
+        ],
+    }
+    assert embedding_model.queries == ["What is growth rate?"]
+    assert vector_store.calls == [
+        ([1.0, 0.0, 0.0], {f"{generation_id}:{chunk_id}"}, 5)
+    ]
+    assert {
+        "generation_id",
+        "record_id",
+        "embedding",
+        "score",
+    }.isdisjoint(response.json()["results"][0])
+
+
+def test_search_missing_knowledge_base_returns_404_before_external_calls(
+    client: TestClient,
+) -> None:
+    embedding_model = ApiSearchEmbeddingModel()
+
+    def fail_if_chroma_opens() -> ApiSearchVectorStore:
+        raise AssertionError("Chroma must not open")
+
+    client.app.dependency_overrides[get_embedding_model] = lambda: embedding_model
+    client.app.dependency_overrides[get_search_vector_store_factory] = lambda: (
+        fail_if_chroma_opens
+    )
+
+    response = client.post(
+        "/api/knowledge-bases/999/search",
+        json={"query": "question"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Knowledge base not found"}
+    assert embedding_model.queries == []
+
+
+def test_search_without_embedded_chunks_returns_409_before_external_calls(
+    client: TestClient,
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = int(created["id"])
+    upload_document(client, knowledge_base_id, filename="pending.txt")
+    embedding_model = ApiSearchEmbeddingModel()
+
+    def fail_if_chroma_opens() -> ApiSearchVectorStore:
+        raise AssertionError("Chroma must not open")
+
+    client.app.dependency_overrides[get_embedding_model] = lambda: embedding_model
+    client.app.dependency_overrides[get_search_vector_store_factory] = lambda: (
+        fail_if_chroma_opens
+    )
+
+    response = client.post(
+        f"/api/knowledge-bases/{knowledge_base_id}/search",
+        json={"query": "question"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Knowledge base has no searchable embedded chunks"
+    }
+    assert embedding_model.queries == []
+
+
+def test_search_returns_200_with_empty_results(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = int(created["id"])
+    uploaded = upload_document(client, knowledge_base_id, filename="notes.txt")
+    with test_session_factory() as session:
+        add_document_graph(session, int(uploaded["id"]))
+
+    vector_store = ApiSearchVectorStore([])
+    client.app.dependency_overrides[get_embedding_model] = (
+        lambda: ApiSearchEmbeddingModel()
+    )
+    client.app.dependency_overrides[get_search_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+
+    response = client.post(
+        f"/api/knowledge-bases/{knowledge_base_id}/search",
+        json={"query": "no match", "top_k": 3},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"query": "no match", "results": []}
+    assert vector_store.calls[0][2] == 3
+
+
+def test_search_converts_dashscope_failure_to_502(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = int(created["id"])
+    uploaded = upload_document(client, knowledge_base_id, filename="notes.txt")
+    with test_session_factory() as session:
+        add_document_graph(session, int(uploaded["id"]))
+
+    embedding_model = ApiSearchEmbeddingModel(
+        error=DashScopeEmbeddingError("provider-secret-body sk-secret-test")
+    )
+    client.app.dependency_overrides[get_embedding_model] = lambda: embedding_model
+
+    response = client.post(
+        f"/api/knowledge-bases/{knowledge_base_id}/search",
+        json={"query": "question"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Query embedding could not be generated"}
+    assert "provider-secret-body" not in response.text
+    assert "sk-secret-test" not in response.text
+
+
+def test_search_converts_chroma_failure_to_503(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = int(created["id"])
+    uploaded = upload_document(client, knowledge_base_id, filename="notes.txt")
+    with test_session_factory() as session:
+        add_document_graph(session, int(uploaded["id"]))
+
+    vector_store = ApiSearchVectorStore(
+        [],
+        error=ChromaVectorStoreError("raw Chroma error /private/path"),
+    )
+    client.app.dependency_overrides[get_embedding_model] = (
+        lambda: ApiSearchEmbeddingModel()
+    )
+    client.app.dependency_overrides[get_search_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+
+    response = client.post(
+        f"/api/knowledge-bases/{knowledge_base_id}/search",
+        json={"query": "question"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Knowledge base search is temporarily unavailable"
+    }
+    assert "/private/path" not in response.text
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"query": ""},
+        {"query": "   "},
+        {"query": "question", "top_k": 0},
+        {"query": "question", "top_k": 21},
+        {"query": "question", "top_k": True},
+        {"query": "question", "top_k": "5"},
+    ],
+)
+def test_search_rejects_invalid_request_with_422(
+    client: TestClient,
+    payload: dict[str, object],
+) -> None:
+    created = create_knowledge_base(client)
+
+    response = client.post(
+        f"/api/knowledge-bases/{created['id']}/search",
+        json=payload,
+    )
+
+    assert response.status_code == 422
