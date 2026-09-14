@@ -1,8 +1,7 @@
-<template>
-  <main class="home">
-    <p class="eyebrow">V1 · StudyRAG</p>
-    <h1>StudyPilot</h1>
-    <p class="tagline">Personal AI Learning System</p>
-  </main>
-</template>
+<script setup>
+import WorkspaceView from './views/WorkspaceView.vue'
+</script>
 
+<template>
+  <WorkspaceView />
+</template>
