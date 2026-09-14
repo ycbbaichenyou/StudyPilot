@@ -2,7 +2,7 @@
 
 StudyPilot 是一个供本科生学习和实践 AI 应用开发的项目。
 
-当前仓库已完成 V1 Stage 6-3。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传、文档管理、文档解析、内容查询、字符分块、显式 Embedding、知识库向量检索、Context Assembly 和 Answer Generation 能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline；DashScope `text-embedding-v4` 生成文档及查询向量，Chroma PersistentClient 保存每个 Chunk 对应的向量记录并执行 cosine search。Context Assembly 按检索顺序生成带编号引用的完整 Chunk block；固定 Prompt 要求回答只能依据资料并使用对应编号引用，DashScope `qwen-plus` 负责生成单轮回答。Agent、Tool Calling、Memory、多轮对话和前端问答界面尚未实现。
+当前仓库已完成 V1 Stage 6-4。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传、文档管理、文档解析、内容查询、字符分块、显式 Embedding、知识库向量检索、Context Assembly、Answer Generation 和 Citation Validation 能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline；DashScope `text-embedding-v4` 生成文档及查询向量，Chroma PersistentClient 保存每个 Chunk 对应的向量记录并执行 cosine search。Context Assembly 按检索顺序生成带编号引用的完整 Chunk block；固定 Prompt 要求回答只能依据资料并使用对应编号引用，DashScope `qwen-plus` 负责生成单轮回答；Citation Validation 校验模型实际使用的引用编号。Agent、Tool Calling、Memory、多轮对话和前端问答界面尚未实现。
 
 ## 环境要求
 
@@ -62,7 +62,9 @@ export STUDYPILOT_DATABASE_URL="sqlite:////absolute/path/to/studypilot.db"
 
 上下文组装请求复用相同的 `query` 和 `top_k`，并接受默认值为 6000 的正整数 `max_context_characters`。服务保持 Retrieval 顺序，一个 Chunk 生成一个 `[编号] 文件名 | 来源信息` block；字符预算统计 header、正文和 block 分隔符，若下一个完整 block 超出预算就停止，不截断 Chunk。响应同时返回组装后的 `context`、已纳入的 `blocks` 和 `citations`、实际字符数以及是否因预算停止。
 
-问答请求复用 `query`、`top_k` 和 `max_context_characters`。Answer Service 依次执行 Retrieval、Context Assembly、Prompt Builder 和 LLM Adapter；有 Context 时返回 `status=answered`、模型回答及实际进入 Context 的 citations。没有合格检索结果或首个完整 block 无法放入字符预算时，不调用 LLM，返回 200、`status=insufficient_context` 和空 answer。知识库不存在返回 404，没有有效 embedded Chunk 返回 409，Embedding 或 LLM 失败返回 502，Chroma 失败返回 503。
+问答请求复用 `query`、`top_k` 和 `max_context_characters`。Answer Service 依次执行 Retrieval、Context Assembly、Prompt Builder、LLM Adapter 和 Citation Validation；有 Context 时返回 `status=answered`、模型回答及模型实际引用且存在于 Context 的 citations。`citation_status=valid` 表示所有引用编号有效，`invalid_reference` 表示答案含有 Context 中不存在的编号，`missing` 表示答案没有引用；后两种状态都保留模型原始答案，也不会再次调用 LLM。没有合格检索结果或首个完整 block 无法放入字符预算时，不调用 LLM，返回 200、`status=insufficient_context`、空 answer 和 `citation_status=missing`。知识库不存在返回 404，没有有效 embedded Chunk 返回 409，Embedding 或 LLM 失败返回 502，Chroma 失败返回 503。
+
+`backend/evals/` 保存不依赖真实模型的固定 RAG 评测基线，覆盖可回答、不可回答、多文档来源、Context 截断、无效引用和无引用回答。评测测试使用固定 Retrieval 结果和 mock answer，可通过后端完整测试命令重复运行，不需要配置 DashScope API Key。
 
 ## 数据库迁移
 

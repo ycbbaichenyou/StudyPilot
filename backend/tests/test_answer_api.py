@@ -197,6 +197,7 @@ def test_answer_api_returns_answer_and_context_citations(
         "query": "什么是增长率？",
         "status": "answered",
         "answer": "增长率表示相对变化。[1]",
+        "citation_status": "valid",
         "citations": [
             {
                 "citation_number": 1,
@@ -260,11 +261,50 @@ def test_answer_api_returns_insufficient_context_without_calling_llm(
         "query": "没有匹配的问题",
         "status": "insufficient_context",
         "answer": None,
+        "citation_status": "missing",
         "citations": [],
         "used_context_characters": 0,
         "context_truncated": False,
     }
     assert llm_model.calls == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_status", "expected_citation_count"),
+    [
+        ("有效来源 [1]，不存在的来源 [9]。", "invalid_reference", 1),
+        ("回答没有任何引用。", "missing", 0),
+    ],
+)
+def test_answer_api_reports_model_citation_integrity(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    answer: str,
+    expected_status: str,
+    expected_citation_count: int,
+) -> None:
+    graph = add_searchable_graph(client, test_session_factory)
+    llm_model = ApiLLM(answer)
+    override_answer_dependencies(
+        client,
+        embedding_model=ApiEmbeddingModel(),
+        vector_store=ApiVectorStore([graph.hit()]),
+        llm_model=llm_model,
+    )
+
+    response = client.post(
+        f"/api/knowledge-bases/{graph.knowledge_base_id}/answer",
+        json={"query": "什么是增长率？"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == answer
+    assert body["citation_status"] == expected_status
+    assert len(body["citations"]) == expected_citation_count
+    if expected_citation_count:
+        assert body["citations"][0]["citation_number"] == 1
+    assert len(llm_model.calls) == 1
 
 
 def test_answer_api_returns_404_without_calling_external_services(

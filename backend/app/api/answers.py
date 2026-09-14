@@ -15,6 +15,7 @@ from app.llm import DashScopeLLM, DashScopeLLMError, get_llm_model
 from app.services import answer_generation as answer_generation_service
 from app.services import context_assembly as context_assembly_service
 from app.services import retrieval as retrieval_service
+from app.services.citation_validation import CitationStatus
 from app.stores import (
     ChromaVectorStore,
     ChromaVectorStoreError,
@@ -77,6 +78,7 @@ class KnowledgeBaseAnswerResponse(BaseModel):
     status: answer_generation_service.AnswerStatus
     answer: str | None
     citations: list[AnswerCitationResponse]
+    citation_status: CitationStatus
     used_context_characters: int
     context_truncated: bool
 
@@ -135,6 +137,7 @@ def answer_knowledge_base_question(
         status=result.status,
         answer=result.answer,
         citations=list(result.citations),
+        citation_status=result.citation_status,
         used_context_characters=result.used_context_characters,
         context_truncated=result.context_truncated,
     )

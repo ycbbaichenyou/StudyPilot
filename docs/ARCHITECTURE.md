@@ -4,9 +4,9 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库已完成 V1 Stage 6-3。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。Stage 5-1 增加文档 Embedding 状态、DashScope `text-embedding-v4` 适配器、Chroma 持久化边界，以及显式创建和查询 Embedding 状态的 API。Stage 5-2 增加 `stale` Embedding 状态和按 Document 清理 Chroma 的统一边界，并在 Chunk 重建、成功重新解析、单个 Document 删除和 KnowledgeBase 删除时维护跨 SQLite、Chroma 与上传文件的生命周期一致性。Stage 6-1 增加 Query Embedding、基于 record allowlist 的 Chroma cosine search、SQLite 来源重载与二次有效性校验，以及知识库 Search API。Stage 6-2 增加独立 Context Assembly 服务及 Context API，在不改变 Retrieval 的前提下按字符预算组装完整 Chunk 和引用信息。Stage 6-3 增加固定 Prompt Builder、DashScope `qwen-plus` LLM Adapter、同步 Answer Generation Service 和 Answer API。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库已完成 V1 Stage 6-4。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。Stage 5-1 增加文档 Embedding 状态、DashScope `text-embedding-v4` 适配器、Chroma 持久化边界，以及显式创建和查询 Embedding 状态的 API。Stage 5-2 增加 `stale` Embedding 状态和按 Document 清理 Chroma 的统一边界，并在 Chunk 重建、成功重新解析、单个 Document 删除和 KnowledgeBase 删除时维护跨 SQLite、Chroma 与上传文件的生命周期一致性。Stage 6-1 增加 Query Embedding、基于 record allowlist 的 Chroma cosine search、SQLite 来源重载与二次有效性校验，以及知识库 Search API。Stage 6-2 增加独立 Context Assembly 服务及 Context API，在不改变 Retrieval 的前提下按字符预算组装完整 Chunk 和引用信息。Stage 6-3 增加固定 Prompt Builder、DashScope `qwen-plus` LLM Adapter、同步 Answer Generation Service 和 Answer API。Stage 6-4 增加回答引用编号校验、只返回模型实际引用来源的 Answer API 契约，以及不调用真实模型的固定 RAG 评测基线。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
 
-基础向量检索、Context Assembly、Prompt 和单轮 Answer Generation 已经实现；Agent、Tool Calling、Memory、多轮对话和前端问答界面尚未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，Chroma 保存 Chunk 的向量副本，三者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析、分块、Embedding、Search、Context 和 Answer 接口外的后续业务接口与界面细节仍需在对应任务中按最小需求确定。
+基础向量检索、Context Assembly、Prompt、单轮 Answer Generation 和 Citation Validation 已经实现；Agent、Tool Calling、Memory、多轮对话和前端问答界面尚未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，Chroma 保存 Chunk 的向量副本，三者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析、分块、Embedding、Search、Context 和 Answer 接口外的后续业务接口与界面细节仍需在对应任务中按最小需求确定。
 
 ## 2. V1 目标
 
@@ -129,7 +129,9 @@ Stage 6-3 的 Prompt Builder 接收原始 query 和 `AssembledContext`，固定�
 
 LLM Adapter 使用标准库 HTTP 调用 DashScope 中国（北京）的原生文本生成 endpoint，默认模型为 `qwen-plus`，API Key 继续只从 `DASHSCOPE_API_KEY` 读取。Adapter 只接收 messages，负责认证、60 秒 timeout、HTTP/网络错误边界和 `output.choices[0].message.content` 解析；它不知道 KnowledgeBase、SQLite、Chroma、Retrieval 或 Citation，也不发送 tools。
 
-Answer Generation Service 保持同步显式调用链：Retrieval → Context Assembly → Prompt Builder → LLM Adapter。它只把实际进入 Context 的 citations 返回给 API。Context 为空时直接返回 `insufficient_context`，不构建 Prompt、不调用 LLM；Context 非空时返回 `answered` 和模型文本。该阶段不保存 query、answer 或 history，不引入 Agent、Tool Calling、Memory、多轮对话、Rerank、Hybrid Search 或 LangChain。
+Answer Generation Service 保持同步显式调用链：Retrieval → Context Assembly → Prompt Builder → LLM Adapter → Citation Validation。Context 为空时直接返回 `insufficient_context`，不构建 Prompt、不调用 LLM；Context 非空时返回 `answered` 和模型原始文本，再从中提取排序去重的 `[数字]` 引用。服务只返回模型实际引用且存在于 Context 的 citations：全部编号有效为 `citation_status=valid`，出现 Context 中不存在的编号为 `invalid_reference`，没有编号为 `missing`。无效或缺失引用不会触发第二次模型调用，也不会改写答案文本。
+
+Stage 6-4 的 Citation Validation 是 Answer Generation 之后的纯内存校验，不访问数据库、Chroma 或模型服务。`backend/evals/` 中的固定基线通过预设 Retrieval 结果和 mock answer 覆盖可回答、不可回答、多文档来源、Context 截断、无效引用和无引用回答；运行基线不需要 API Key，也不新增评测依赖。该阶段不保存 query、answer 或评测结果，不修改数据库结构。
 
 核心 RAG 过程拆为可观察的普通步骤：
 
@@ -141,7 +143,8 @@ Answer Generation Service 保持同步显式调用链：Retrieval → Context As
 6. 从 Chroma 检索相关文本块。
 7. 按明确规则筛选、排序并组装上下文。
 8. 构建提示词并调用生成模型。
-9. 返回答案以及对应的来源信息。
+9. 校验答案实际引用的编号并筛选对应来源。
+10. 返回答案、引用状态以及对应的有效来源信息。
 
 这些步骤不得由 LangChain 代理或用单个黑盒调用取代。每个阶段应具有清楚的数据结构和错误边界，使学习者可以打印、测试和解释中间结果。
 
@@ -185,7 +188,7 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 - `POST /api/documents/{document_id}/embedding`：为已解析且已有 Chunk 的文档同步创建或重建 Embedding；文档不存在返回 404，尚未解析或没有 Chunk 返回 409。模型或 Chroma 操作失败返回 200，并以 `embedding_failed` 和安全错误信息明确表示失败。
 - `POST /api/knowledge-bases/{knowledge_base_id}/search`：在知识库当前有效 Embedding allowlist 内执行向量检索；`query` 去除首尾空白后不能为空，`top_k` 默认为 5 且范围为 1 到 20。知识库不存在返回 404，没有有效 embedded Chunk 返回 409，DashScope 失败返回 502，Chroma 失败返回 503；完成搜索但没有合格命中时返回 200 和空结果。
 - `POST /api/knowledge-bases/{knowledge_base_id}/context`：复用 Retrieval 服务后组装上下文；请求沿用 `query` 和 `top_k`，并接受默认 6000 的正整数 `max_context_characters`。响应返回 `context`、逐 Chunk 的 `blocks`、与编号对应的 `citations`、`used_characters` 和 `truncated`，错误状态沿用 Search API 的边界。
-- `POST /api/knowledge-bases/{knowledge_base_id}/answer`：同步执行 Retrieval、Context Assembly、Prompt 和 LLM 调用；请求沿用 `query`、`top_k` 和 `max_context_characters`。正常回答和 `insufficient_context` 均返回 200；知识库不存在返回 404，没有有效 embedded Chunk 返回 409，Embedding 或 LLM 失败返回 502，Chroma 失败返回 503。响应不暴露 Context、Prompt、messages、generation id 或 Chroma record id。
+- `POST /api/knowledge-bases/{knowledge_base_id}/answer`：同步执行 Retrieval、Context Assembly、Prompt、LLM 调用和 Citation Validation；请求沿用 `query`、`top_k` 和 `max_context_characters`。正常回答和 `insufficient_context` 均返回 200；响应以 `citation_status` 区分 `valid`、`invalid_reference` 和 `missing`，citations 只包含模型实际引用且存在于 Context 的来源。知识库不存在返回 404，没有有效 embedded Chunk 返回 409，Embedding 或 LLM 失败返回 502，Chroma 失败返回 503。响应不暴露 Context、Prompt、messages、generation id 或 Chroma record id。
 - `DELETE /api/documents/{document_id}`：删除 `Document` 记录及对应的磁盘文件。
 - `POST /api/documents/{document_id}/parse`：同步解析原始文件并保存 `DocumentContent`；文档不存在返回 404，解析失败返回 200 和状态为 `parse_failed` 的文档。
 
@@ -203,7 +206,7 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 
 SQLite 文档记录与向量记录共享稳定的 `document_id`，`Chunk.id` 作为稳定的 `chunk_id`。通过 Chunk 对应的 DocumentContent 取得文档标识和适用的来源位置，例如 PDF 页码或 DOCX 段落序号。SQLite 只保存当前有效的 `embedding_generation_id`，不保存向量；后续检索必须同时使用 `document_id` 和有效 generation 约束，不能把未激活或过期 generation 当成有效数据。
 
-Stage 6-1 至 Stage 6-3 中 SQLite 是检索资格和返回业务字段的事实来源。Chroma 只负责在 allowlist 内计算向量距离；即使 Chroma 返回一条记录，也必须在 SQLite hydrate 和二次校验通过后才能进入 Search、Context 或 Answer 流程。API 不暴露内部 generation id、Chroma record id、查询向量或额外 score。Context Assembly 和 Answer Generation 只转换内存中的结果，不新增持久化数据。
+Stage 6-1 至 Stage 6-4 中 SQLite 是检索资格和返回业务字段的事实来源。Chroma 只负责在 allowlist 内计算向量距离；即使 Chroma 返回一条记录，也必须在 SQLite hydrate 和二次校验通过后才能进入 Search、Context 或 Answer 流程。API 不暴露内部 generation id、Chroma record id、查询向量或额外 score。Context Assembly、Answer Generation 和 Citation Validation 只转换内存中的结果，不新增持久化数据。
 
 不要在两个存储中无理由复制完整业务数据。SQLite 是结构化业务状态的事实来源；Chroma 是向量检索数据的事实来源。
 
@@ -240,7 +243,8 @@ Stage 6-1 至 Stage 6-3 中 SQLite 是检索资格和返回业务字段的事实
   → 按顺序和字符预算组装完整 Chunk 与引用（Stage 6-2 截止）
   → 构建固定提示词
   → 调用 DashScope qwen-plus
-  → 返回单轮答案和实际 Context 引用（Stage 6-3 截止）
+  → 校验模型答案中的引用编号
+  → 返回单轮答案和模型实际引用的有效来源（Stage 6-4 截止）
   → 返回前端展示（尚未实现）
 ```
 
@@ -301,7 +305,8 @@ V1 的测试应覆盖最重要且容易出错的边界：
 - Context Assembly 的顺序保持、完整 block 字符预算、来源格式、citation 编号和输入不变性。
 - Prompt 的固定结构、引用约束和 Context 非指令边界。
 - DashScope LLM Adapter 的请求结构、timeout、安全错误和非法响应校验。
-- Answer Generation 的显式调用顺序、citation 一致性、空 Context 跳过 LLM 和 API 状态码。
+- Answer Generation 的显式调用顺序、空 Context 跳过 LLM 和 API 状态码。
+- Citation Validation 的编号提取、重复和乱序引用、无效编号、缺失引用、来源过滤及固定 mock 评测基线。
 - 无结果、解析失败、存储失败和模型失败等错误路径。
 - FastAPI 请求校验、响应结构和关键用例。
 - 前端关键交互状态与前后端契约。
