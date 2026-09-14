@@ -2,7 +2,7 @@
 
 StudyPilot 是一个供本科生学习和实践 AI 应用开发的项目。
 
-当前仓库已完成 V1 Stage 6-2。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传、文档管理、文档解析、内容查询、字符分块、显式 Embedding、知识库向量检索和 Context Assembly 能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline；DashScope `text-embedding-v4` 生成文档及查询向量，Chroma PersistentClient 保存每个 Chunk 对应的向量记录并执行 cosine search。Chunk 重建、成功重新解析、文档删除和知识库删除会显式维护 SQLite、Chroma 与上传文件之间的生命周期一致性。检索只允许命中 SQLite 当前标记为 `embedded` 的有效 generation，并在返回前通过 SQLite 重新加载和校验来源。Context Assembly 按检索顺序生成带编号引用的完整 Chunk block，并通过 Python 字符长度限制上下文。Prompt、LLM、RAG Answer 和 Agent 尚未实现。
+当前仓库已完成 V1 Stage 6-3。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传、文档管理、文档解析、内容查询、字符分块、显式 Embedding、知识库向量检索、Context Assembly 和 Answer Generation 能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline；DashScope `text-embedding-v4` 生成文档及查询向量，Chroma PersistentClient 保存每个 Chunk 对应的向量记录并执行 cosine search。Context Assembly 按检索顺序生成带编号引用的完整 Chunk block；固定 Prompt 要求回答只能依据资料并使用对应编号引用，DashScope `qwen-plus` 负责生成单轮回答。Agent、Tool Calling、Memory、多轮对话和前端问答界面尚未实现。
 
 ## 环境要求
 
@@ -34,6 +34,7 @@ uv run --no-python-downloads uvicorn app.main:app --reload
 - Embedding 创建或重建：`POST http://127.0.0.1:8000/api/documents/{document_id}/embedding`
 - 知识库向量检索：`POST http://127.0.0.1:8000/api/knowledge-bases/{knowledge_base_id}/search`
 - 检索上下文组装：`POST http://127.0.0.1:8000/api/knowledge-bases/{knowledge_base_id}/context`
+- 知识库单轮问答：`POST http://127.0.0.1:8000/api/knowledge-bases/{knowledge_base_id}/answer`
 - API 文档：`http://127.0.0.1:8000/docs`
 
 运行 `alembic upgrade head` 会在全新环境中创建 `backend/data/studypilot.db` 及当前数据表，并把数据库升级到最新 revision。应用启动时不会自动创建或升级数据表；所有正常运行环境都必须先通过 Alembic 将数据库升级到当前版本。测试可以显式调用 `init_db(create_tables=True)` 创建隔离 schema。该本地数据库文件已被 Git 忽略。
@@ -55,11 +56,13 @@ export STUDYPILOT_DATABASE_URL="sqlite:////absolute/path/to/studypilot.db"
 
 项目通过 Python 标准库读取进程环境，不会自动加载 `.env`。仓库根目录的 `.env.example` 提供了安全示例；如需使用 `.env`，请通过 shell 或 `uv run --env-file ../.env ...` 将其载入。
 
-调用 Embedding、知识库检索或上下文组装接口前必须配置 `DASHSCOPE_API_KEY`。默认使用 DashScope 中国（北京）公共 endpoint、`text-embedding-v4`、1024 维稠密向量，以及 `backend/data/chroma` 持久化目录；可以通过 `.env.example` 中的可选变量覆盖 endpoint、模型名称和 Chroma 路径。文档向量使用 `text_type=document`，查询向量使用 `text_type=query`。Chroma collection 显式采用 cosine distance，并按 provider、model、dimensions 和向量 schema version 隔离。上传、解析和分块都不会自动触发 Embedding。
+调用 Embedding、知识库检索、上下文组装或问答接口前必须配置 `DASHSCOPE_API_KEY`。Embedding 默认使用 DashScope 中国（北京）公共 endpoint、`text-embedding-v4` 和 1024 维稠密向量；Answer Generation 使用 DashScope 原生文本生成 endpoint，模型由 `DASHSCOPE_LLM_MODEL` 配置并默认为 `qwen-plus`。Chroma 默认使用 `backend/data/chroma` 持久化目录；可以通过 `.env.example` 中的可选变量覆盖 Embedding endpoint、模型名称和 Chroma 路径。文档向量使用 `text_type=document`，查询向量使用 `text_type=query`。上传、解析和分块都不会自动触发 Embedding。
 
 检索请求体包含非空 `query` 和可选 `top_k`；`top_k` 默认为 5，允许范围为 1 到 20。知识库不存在时返回 404，没有任何当前有效的 embedded Chunk 时返回 409；完成检索但没有合格命中时返回 200 和空 `results`。检索结果包含 SQLite 中重新加载的 Chunk、DocumentContent 和 Document 来源字段，不返回内部 generation id、Chroma record id、向量或额外 score。
 
 上下文组装请求复用相同的 `query` 和 `top_k`，并接受默认值为 6000 的正整数 `max_context_characters`。服务保持 Retrieval 顺序，一个 Chunk 生成一个 `[编号] 文件名 | 来源信息` block；字符预算统计 header、正文和 block 分隔符，若下一个完整 block 超出预算就停止，不截断 Chunk。响应同时返回组装后的 `context`、已纳入的 `blocks` 和 `citations`、实际字符数以及是否因预算停止。
+
+问答请求复用 `query`、`top_k` 和 `max_context_characters`。Answer Service 依次执行 Retrieval、Context Assembly、Prompt Builder 和 LLM Adapter；有 Context 时返回 `status=answered`、模型回答及实际进入 Context 的 citations。没有合格检索结果或首个完整 block 无法放入字符预算时，不调用 LLM，返回 200、`status=insufficient_context` 和空 answer。知识库不存在返回 404，没有有效 embedded Chunk 返回 409，Embedding 或 LLM 失败返回 502，Chroma 失败返回 503。
 
 ## 数据库迁移
 
