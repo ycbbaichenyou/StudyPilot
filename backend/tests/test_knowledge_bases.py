@@ -972,3 +972,195 @@ def test_search_rejects_invalid_request_with_422(
     )
 
     assert response.status_code == 422
+
+
+def test_context_endpoint_reuses_retrieval_and_returns_assembled_context(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = int(created["id"])
+    uploaded = upload_document(client, knowledge_base_id, filename="growth.txt")
+    document_id = int(uploaded["id"])
+    with test_session_factory() as session:
+        content_id, chunk_id = add_document_graph(session, document_id)
+
+    generation_id = "a" * 32
+    embedding_model = ApiSearchEmbeddingModel()
+    vector_store = ApiSearchVectorStore(
+        [
+            ChromaSearchHit(
+                record_id=f"{generation_id}:{chunk_id}",
+                document_id=document_id,
+                chunk_id=chunk_id,
+                generation_id=generation_id,
+                distance=0.125,
+            )
+        ]
+    )
+    client.app.dependency_overrides[get_embedding_model] = lambda: embedding_model
+    client.app.dependency_overrides[get_search_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+    text = f"Content for document {document_id}"
+    expected_context = f"[1] growth.txt | line 1\n\n{text}"
+
+    response = client.post(
+        f"/api/knowledge-bases/{knowledge_base_id}/context",
+        json={
+            "query": "  What is growth rate?  ",
+            "top_k": 2,
+            "max_context_characters": 6000,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "query": "What is growth rate?",
+        "context": expected_context,
+        "blocks": [
+            {
+                "citation_number": 1,
+                "header": "[1] growth.txt | line 1",
+                "text": text,
+            }
+        ],
+        "citations": [
+            {
+                "citation_number": 1,
+                "chunk_id": chunk_id,
+                "document_content_id": content_id,
+                "document_id": document_id,
+                "knowledge_base_id": knowledge_base_id,
+                "original_filename": "growth.txt",
+                "content_sequence": 0,
+                "chunk_sequence": 0,
+                "source_type": "line",
+                "source_start": 1,
+                "source_end": 1,
+                "start_offset": 0,
+                "end_offset": len(text),
+                "distance": 0.125,
+            }
+        ],
+        "used_characters": len(expected_context),
+        "truncated": False,
+    }
+    assert embedding_model.queries == ["What is growth rate?"]
+    assert vector_store.calls == [
+        ([1.0, 0.0, 0.0], {f"{generation_id}:{chunk_id}"}, 2)
+    ]
+
+
+def test_context_endpoint_returns_whole_block_or_nothing_for_small_budget(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = int(created["id"])
+    uploaded = upload_document(client, knowledge_base_id, filename="notes.txt")
+    document_id = int(uploaded["id"])
+    with test_session_factory() as session:
+        _, chunk_id = add_document_graph(session, document_id)
+
+    generation_id = "a" * 32
+    vector_store = ApiSearchVectorStore(
+        [
+            ChromaSearchHit(
+                record_id=f"{generation_id}:{chunk_id}",
+                document_id=document_id,
+                chunk_id=chunk_id,
+                generation_id=generation_id,
+                distance=0.25,
+            )
+        ]
+    )
+    client.app.dependency_overrides[get_embedding_model] = (
+        lambda: ApiSearchEmbeddingModel()
+    )
+    client.app.dependency_overrides[get_search_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+
+    response = client.post(
+        f"/api/knowledge-bases/{knowledge_base_id}/context",
+        json={"query": "question", "max_context_characters": 1},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "query": "question",
+        "context": "",
+        "blocks": [],
+        "citations": [],
+        "used_characters": 0,
+        "truncated": True,
+    }
+
+
+def test_context_missing_knowledge_base_returns_404_before_external_calls(
+    client: TestClient,
+) -> None:
+    embedding_model = ApiSearchEmbeddingModel()
+
+    def fail_if_chroma_opens() -> ApiSearchVectorStore:
+        raise AssertionError("Chroma must not open")
+
+    client.app.dependency_overrides[get_embedding_model] = lambda: embedding_model
+    client.app.dependency_overrides[get_search_vector_store_factory] = lambda: (
+        fail_if_chroma_opens
+    )
+
+    response = client.post(
+        "/api/knowledge-bases/999/context",
+        json={"query": "question"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Knowledge base not found"}
+    assert embedding_model.queries == []
+
+
+def test_context_without_embedded_chunks_returns_409_before_external_calls(
+    client: TestClient,
+) -> None:
+    created = create_knowledge_base(client)
+    knowledge_base_id = int(created["id"])
+    embedding_model = ApiSearchEmbeddingModel()
+
+    def fail_if_chroma_opens() -> ApiSearchVectorStore:
+        raise AssertionError("Chroma must not open")
+
+    client.app.dependency_overrides[get_embedding_model] = lambda: embedding_model
+    client.app.dependency_overrides[get_search_vector_store_factory] = lambda: (
+        fail_if_chroma_opens
+    )
+
+    response = client.post(
+        f"/api/knowledge-bases/{knowledge_base_id}/context",
+        json={"query": "question"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Knowledge base has no searchable embedded chunks"
+    }
+    assert embedding_model.queries == []
+
+
+@pytest.mark.parametrize("invalid_budget", [0, -1, True, 1.5, "6000"])
+def test_context_rejects_invalid_character_budget_with_422(
+    client: TestClient,
+    invalid_budget: object,
+) -> None:
+    created = create_knowledge_base(client)
+
+    response = client.post(
+        f"/api/knowledge-bases/{created['id']}/context",
+        json={
+            "query": "question",
+            "max_context_characters": invalid_budget,
+        },
+    )
+
+    assert response.status_code == 422

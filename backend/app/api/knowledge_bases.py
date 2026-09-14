@@ -17,6 +17,7 @@ from app.models import KnowledgeBase
 from app.services import documents as document_service
 from app.services import embedding_cleanup as embedding_cleanup_service
 from app.services import knowledge_bases as knowledge_base_service
+from app.services import context_assembly as context_assembly_service
 from app.services import retrieval as retrieval_service
 from app.stores import (
     ChromaVectorStore,
@@ -110,6 +111,50 @@ class KnowledgeBaseSearchResponse(BaseModel):
     results: list[KnowledgeBaseSearchResultResponse]
 
 
+class KnowledgeBaseContextRequest(KnowledgeBaseSearchRequest):
+    max_context_characters: int = Field(
+        default=context_assembly_service.DEFAULT_MAX_CONTEXT_CHARACTERS,
+        ge=1,
+        strict=True,
+    )
+
+
+class ContextCitationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    citation_number: int
+    chunk_id: int
+    document_content_id: int
+    document_id: int
+    knowledge_base_id: int
+    original_filename: str
+    content_sequence: int
+    chunk_sequence: int
+    source_type: str
+    source_start: int
+    source_end: int
+    start_offset: int
+    end_offset: int
+    distance: float
+
+
+class ContextBlockResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    citation_number: int
+    header: str
+    text: str
+
+
+class KnowledgeBaseContextResponse(BaseModel):
+    query: str
+    context: str
+    blocks: list[ContextBlockResponse]
+    citations: list[ContextCitationResponse]
+    used_characters: int
+    truncated: bool
+
+
 def get_existing_knowledge_base(
     knowledge_base_id: int,
     session: Session,
@@ -185,6 +230,61 @@ def search_knowledge_base(
         ) from exc
 
     return KnowledgeBaseSearchResponse(query=payload.query, results=results)
+
+
+@router.post(
+    "/{knowledge_base_id}/context",
+    response_model=KnowledgeBaseContextResponse,
+)
+def assemble_knowledge_base_context(
+    knowledge_base_id: int,
+    payload: KnowledgeBaseContextRequest,
+    session: DatabaseSession,
+    embedding_model: QueryEmbeddingModel,
+    vector_store_factory: SearchVectorStoreFactory,
+) -> KnowledgeBaseContextResponse:
+    try:
+        results = retrieval_service.search_knowledge_base(
+            session,
+            knowledge_base_id,
+            query=payload.query,
+            top_k=payload.top_k,
+            embedding_model=embedding_model,
+            vector_store_factory=vector_store_factory,
+        )
+    except retrieval_service.KnowledgeBaseNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except retrieval_service.KnowledgeBaseNotSearchableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except DashScopeEmbeddingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Query embedding could not be generated",
+        ) from exc
+    except ChromaVectorStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Knowledge base search is temporarily unavailable",
+        ) from exc
+
+    assembled = context_assembly_service.assemble_context(
+        results,
+        max_context_characters=payload.max_context_characters,
+    )
+    return KnowledgeBaseContextResponse(
+        query=payload.query,
+        context=assembled.context,
+        blocks=list(assembled.blocks),
+        citations=list(assembled.citations),
+        used_characters=assembled.used_characters,
+        truncated=assembled.truncated,
+    )
 
 
 @router.get("/{knowledge_base_id}", response_model=KnowledgeBaseResponse)

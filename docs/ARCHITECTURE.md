@@ -4,9 +4,9 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库已完成 V1 Stage 6-1。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。Stage 5-1 增加文档 Embedding 状态、DashScope `text-embedding-v4` 适配器、Chroma 持久化边界，以及显式创建和查询 Embedding 状态的 API。Stage 5-2 增加 `stale` Embedding 状态和按 Document 清理 Chroma 的统一边界，并在 Chunk 重建、成功重新解析、单个 Document 删除和 KnowledgeBase 删除时维护跨 SQLite、Chroma 与上传文件的生命周期一致性。Stage 6-1 增加 Query Embedding、基于 record allowlist 的 Chroma cosine search、SQLite 来源重载与二次有效性校验，以及知识库 Search API。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库已完成 V1 Stage 6-2。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。Stage 5-1 增加文档 Embedding 状态、DashScope `text-embedding-v4` 适配器、Chroma 持久化边界，以及显式创建和查询 Embedding 状态的 API。Stage 5-2 增加 `stale` Embedding 状态和按 Document 清理 Chroma 的统一边界，并在 Chunk 重建、成功重新解析、单个 Document 删除和 KnowledgeBase 删除时维护跨 SQLite、Chroma 与上传文件的生命周期一致性。Stage 6-1 增加 Query Embedding、基于 record allowlist 的 Chroma cosine search、SQLite 来源重载与二次有效性校验，以及知识库 Search API。Stage 6-2 增加独立 Context Assembly 服务及 Context API，在不改变 Retrieval 的前提下按字符预算组装完整 Chunk 和引用信息。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
 
-基础向量检索已经实现；Context Assembly、Prompt、LLM、RAG Answer 和 Agent 尚未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，Chroma 保存 Chunk 的向量副本，三者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析、分块、Embedding 和 Search 接口外的后续业务接口、生成模型和界面细节仍需在对应任务中按最小需求确定。
+基础向量检索和 Context Assembly 已经实现；Prompt、LLM、RAG Answer 和 Agent 尚未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，Chroma 保存 Chunk 的向量副本，三者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析、分块、Embedding、Search 和 Context 接口外的后续业务接口、生成模型和界面细节仍需在对应任务中按最小需求确定。
 
 ## 2. V1 目标
 
@@ -121,6 +121,10 @@ Stage 6-1 只实现基础 Retrieval，不组装上下文或生成答案。服务
 
 Chroma Search 必须接收显式查询向量和完整 record allowlist，不配置 embedding function，也不在读取路径创建 collection。Chroma 返回的 id、metadata 和 distance 经存储边界验证后，Retrieval 服务通过 `Chunk → DocumentContent → Document` JOIN 从 SQLite 重新加载业务数据，并再次检查知识库归属、`embedded` 状态、当前 generation 和 record id。失效、旧 generation、孤立或跨知识库命中会被丢弃。最终结果按 `(distance, document_id, content_sequence, chunk_sequence, chunk_id)` 稳定排序，并限制为请求的 `top_k`。
 
+Stage 6-2 的 Context Assembly 是 Retrieval 之后的独立纯服务。它接收已经排序并完成 SQLite 校验的 `RetrievalResult`，保持原顺序且让一个 Chunk 对应一个 Context Block，不合并、不重排，也不回到 Chroma 改变检索策略。每个 block 使用 `[编号] 原始文件名 | 来源信息` 作为 header，PDF、DOCX、TXT 和 Markdown 的来源分别显示为 `page`、`paragraph`、`line` 和 `line_range`，编号与结构化 citation 一一对应。
+
+上下文默认字符预算为 6000，按 Python `len()` 统计 header、Chunk 正文和 block 间的 `\n\n---\n\n` 分隔符。服务按 Retrieval 顺序只加入能够完整放入预算的 block；下一个完整 block 超出预算时立即停止，不截断单个 Chunk，并通过 `used_characters` 和 `truncated` 显式报告结果。该阶段不持久化 Context，不修改数据库结构或 Chroma，也不构建 Prompt 或调用 LLM。
+
 核心 RAG 过程拆为可观察的普通步骤：
 
 1. 解析并规范化文档文本。
@@ -174,6 +178,7 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 - `GET /api/documents/{document_id}/embedding`：只查询当前 Embedding 状态、错误、完成时间和有效 generation id，不触发向量化。
 - `POST /api/documents/{document_id}/embedding`：为已解析且已有 Chunk 的文档同步创建或重建 Embedding；文档不存在返回 404，尚未解析或没有 Chunk 返回 409。模型或 Chroma 操作失败返回 200，并以 `embedding_failed` 和安全错误信息明确表示失败。
 - `POST /api/knowledge-bases/{knowledge_base_id}/search`：在知识库当前有效 Embedding allowlist 内执行向量检索；`query` 去除首尾空白后不能为空，`top_k` 默认为 5 且范围为 1 到 20。知识库不存在返回 404，没有有效 embedded Chunk 返回 409，DashScope 失败返回 502，Chroma 失败返回 503；完成搜索但没有合格命中时返回 200 和空结果。
+- `POST /api/knowledge-bases/{knowledge_base_id}/context`：复用 Retrieval 服务后组装上下文；请求沿用 `query` 和 `top_k`，并接受默认 6000 的正整数 `max_context_characters`。响应返回 `context`、逐 Chunk 的 `blocks`、与编号对应的 `citations`、`used_characters` 和 `truncated`，错误状态沿用 Search API 的边界。
 - `DELETE /api/documents/{document_id}`：删除 `Document` 记录及对应的磁盘文件。
 - `POST /api/documents/{document_id}/parse`：同步解析原始文件并保存 `DocumentContent`；文档不存在返回 404，解析失败返回 200 和状态为 `parse_failed` 的文档。
 
@@ -191,7 +196,7 @@ SQLite 内部以 naive UTC 保存 `created_at` 和 `updated_at`。API 响应在�
 
 SQLite 文档记录与向量记录共享稳定的 `document_id`，`Chunk.id` 作为稳定的 `chunk_id`。通过 Chunk 对应的 DocumentContent 取得文档标识和适用的来源位置，例如 PDF 页码或 DOCX 段落序号。SQLite 只保存当前有效的 `embedding_generation_id`，不保存向量；后续检索必须同时使用 `document_id` 和有效 generation 约束，不能把未激活或过期 generation 当成有效数据。
 
-Stage 6-1 中 SQLite 是检索资格和返回业务字段的事实来源。Chroma 只负责在 allowlist 内计算向量距离；即使 Chroma 返回一条记录，也必须在 SQLite hydrate 和二次校验通过后才能进入 API 响应。API 不暴露内部 generation id、Chroma record id、查询向量或额外 score。
+Stage 6-1 及 Stage 6-2 中 SQLite 是检索资格和返回业务字段的事实来源。Chroma 只负责在 allowlist 内计算向量距离；即使 Chroma 返回一条记录，也必须在 SQLite hydrate 和二次校验通过后才能进入 Search 或 Context API 响应。API 不暴露内部 generation id、Chroma record id、查询向量或额外 score。Context Assembly 只转换内存中的 Retrieval 结果，不新增持久化数据。
 
 不要在两个存储中无理由复制完整业务数据。SQLite 是结构化业务状态的事实来源；Chroma 是向量检索数据的事实来源。
 
@@ -224,8 +229,8 @@ Stage 6-1 中 SQLite 是检索资格和返回业务字段的事实来源。Chrom
   → 问题向量化
   → Chroma 相似度检索
   → SQLite hydrate 与当前 generation 二次校验
-  → 返回排序后的 Chunk 与来源（Stage 6-1 截止）
-  → 筛选并组装上下文
+  → 返回排序后的 Chunk 与来源
+  → 按顺序和字符预算组装完整 Chunk 与引用（Stage 6-2 截止）
   → 构建提示词
   → 调用生成模型
   → 整理答案和来源
@@ -285,6 +290,7 @@ V1 的测试应覆盖最重要且容易出错的边界：
 - Chroma 显式向量写入、generation 清理和稳定标识关联。
 - Query Embedding 的 `text_type`、Chroma allowlist search、返回结构校验和稳定排序。
 - Retrieval 的 SQLite 资格筛选、hydrate、generation 二次校验、跨知识库隔离和失效记录过滤。
+- Context Assembly 的顺序保持、完整 block 字符预算、来源格式、citation 编号和输入不变性。
 - 无结果、解析失败、存储失败和模型失败等错误路径。
 - FastAPI 请求校验、响应结构和关键用例。
 - 前端关键交互状态与前后端契约。
@@ -306,7 +312,7 @@ V1 的测试应覆盖最重要且容易出错的边界：
 以下事项当前没有足够需求，不应提前猜定：
 
 - 生成模型及其供应商。
-- 除当前已列出的健康检查、知识库、文档管理、Embedding 和 Search 接口外，后续业务 API 的具体路径、字段和版本策略。
+- 除当前已列出的健康检查、知识库、文档管理、Embedding、Search 和 Context 接口外，后续业务 API 的具体路径、字段和版本策略。
 - 用户、课程、会话等业务实体及数据模型。
 - 部署方式、访问控制和生产环境规模。
 
