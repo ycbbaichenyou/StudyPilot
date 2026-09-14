@@ -2,7 +2,7 @@
 
 StudyPilot 是一个供本科生学习和实践 AI 应用开发的项目。
 
-当前仓库已完成 V1 Stage 5-1。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传、文档管理、文档解析、内容查询、字符分块和显式 Embedding 能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline；DashScope `text-embedding-v4` 生成向量，Chroma PersistentClient 保存每个 Chunk 对应的向量记录。检索、RAG、LLM 和 Agent 尚未实现。
+当前仓库已完成 V1 Stage 5-2。项目提供可启动的 FastAPI 后端、Vue 3 前端、健康检查接口，以及基于 SQLite 和 SQLAlchemy 2.x 的知识库、文档上传、文档管理、文档解析、内容查询、字符分块和显式 Embedding 能力。Alembic 管理数据库结构版本；PyMuPDF 和 python-docx 与显式 TXT/Markdown 解析器组成文档解析 Pipeline；DashScope `text-embedding-v4` 生成向量，Chroma PersistentClient 保存每个 Chunk 对应的向量记录。Chunk 重建、成功重新解析、文档删除和知识库删除会显式维护 SQLite、Chroma 与上传文件之间的生命周期一致性。检索、RAG、LLM 和 Agent 尚未实现。
 
 ## 环境要求
 
