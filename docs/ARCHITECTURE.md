@@ -4,7 +4,7 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库已完成 V1 Stage 5-1。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。Stage 5-1 增加文档 Embedding 状态、DashScope `text-embedding-v4` 适配器、Chroma 持久化边界，以及显式创建和查询 Embedding 状态的 API。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库已完成 V1 Stage 5-2。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。Stage 5-1 增加文档 Embedding 状态、DashScope `text-embedding-v4` 适配器、Chroma 持久化边界，以及显式创建和查询 Embedding 状态的 API。Stage 5-2 增加 `stale` Embedding 状态和按 Document 清理 Chroma 的统一边界，并在 Chunk 重建、成功重新解析、单个 Document 删除和 KnowledgeBase 删除时维护跨 SQLite、Chroma 与上传文件的生命周期一致性。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
 
 检索、RAG、LLM 和 Agent 尚未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，Chroma 保存 Chunk 的向量副本，三者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析、分块和 Embedding 接口外的后续业务接口、检索参数、生成模型和界面细节仍需在对应任务中按最小需求确定。
 
@@ -111,6 +111,10 @@ Embedding 是分块之后的独立同步步骤，不由上传、解析或分块�
 
 跨 SQLite 与 Chroma 的写入使用 generation 隔离。服务先确认 Document 存在、状态为 `parsed` 且已有 Chunk，再记录 `embedding` 状态并打开 Chroma；因此 Chroma 初始化或配置失败也会进入统一的 `embedding_failed` 状态流程。每次尝试生成新的 32 位 `generation_id`，在内存中取得全部向量后，再以 `generation_id:chunk_id` 作为 Chroma record id 写入新一代记录。写入后必须从 Chroma 重新读取候选 generation，并验证 record 数量和 `chunk_id` 集合与 SQLite 当前 Chunk 完全一致；只有验证和 SQLite 完成状态提交都成功后，`Document.embedding_generation_id` 才指向新一代。失败 generation 会被尽力清理，即使清理本身失败，它也不会成为 SQLite 指向的有效 generation，上一代有效 generation 也不会被删除。成功重建 Embedding 后才会清理上一代记录。Stage 5-1 不实现文档删除或重新解析时的 Chroma 同步。
 
+Stage 5-2-2 重建 Chunk 时，先完整生成全部 ChunkDraft，再在同一个 SQLite transaction 中原子替换 Chunk；除 `pending` 且没有有效 generation 的文档外，同时将 Embedding 标记为 `stale` 并清空 generation、完成时间和错误。该 transaction 提交成功后才打开 Chroma，并按 `document_id` 删除全部旧向量；成功后以第二个 SQLite transaction 将状态从 `stale` 改为 `pending`。Chroma 清理失败不回退已经提交的新 Chunk，文档保持 `stale`、保存固定安全错误，并由 Chunk API 返回可重试的 503。`stale` 状态的后续 Chunk 重建会再次尝试清理。
+
+Stage 5-2-3 成功重新解析时，在替换 DocumentContent、通过级联删除旧 Chunk、更新解析完成状态的同一个 SQLite transaction 中失效已有或历史 Embedding。首次 transaction 提交成功后复用相同的 Chroma 清理及 `stale` 到 `pending` 流程；清理失败时保留新的解析结果并由解析 API 返回 503。解析器失败或解析结果 transaction 失败时不清理 Chroma，并保留上一份完整 DocumentContent、Chunk 和 Embedding；解析状态仍按既有语义记录为 `parse_failed`。解析成功仍不自动重新分块，新的 Chunk 继续由独立 Chunk API 显式创建。
+
 ### 5.5 RAG 核心模块
 
 核心 RAG 过程拆为可观察的普通步骤：
@@ -140,7 +144,7 @@ Embedding 是分块之后的独立同步步骤，不由上传、解析或分块�
 ### SQLite 保存
 
 - `KnowledgeBase`：整数主键、名称、可空描述和创建/更新时间。
-- `Document`：整数主键、所属知识库、文件名、原始文件名、文件类型、文件大小、字符串解析状态、可空解析错误、可空解析完成时间、Embedding 状态、可空 Embedding 错误、可空 Embedding 完成时间、可空有效 generation id 和创建/更新时间。解析状态统一为 `pending`、`parsing`、`parsed` 或 `parse_failed`；Embedding 状态统一为 `pending`、`embedding`、`embedded` 或 `embedding_failed`，数据库继续使用字符串列。
+- `Document`：整数主键、所属知识库、文件名、原始文件名、文件类型、文件大小、字符串解析状态、可空解析错误、可空解析完成时间、Embedding 状态、可空 Embedding 错误、可空 Embedding 完成时间、可空有效 generation id 和创建/更新时间。解析状态统一为 `pending`、`parsing`、`parsed` 或 `parse_failed`；Embedding 状态统一为 `pending`、`embedding`、`embedded`、`embedding_failed` 或 `stale`，数据库继续使用字符串列。
 - `DocumentContent`：整数主键、所属文档、有序序号、解析文本、来源类型、来源起止位置和创建时间。它保存解析阶段的文本单元，不是后续用于向量检索的 Chunk。
 - `Chunk`：整数主键、所属 DocumentContent、在该内容内的有序序号、文本、字符起止 offset 和创建时间。一个 Chunk 只属于一个 DocumentContent；来源类型及页码、段落或行号继续以 DocumentContent 为事实来源。
 - 后续业务明确需要的其他结构化数据。
@@ -183,7 +187,9 @@ SQLite 文档记录与向量记录共享稳定的 `document_id`，`Chunk.id` 作
 
 不要在两个存储中无理由复制完整业务数据。SQLite 是结构化业务状态的事实来源；Chroma 是向量检索数据的事实来源。
 
-原始上传文件保存在 `backend/data/uploads/`，该目录不会提交到 Git。磁盘文件使用 UUID 生成的安全名称，用户提供的名称只记录在 `original_filename` 中，不参与路径拼接。创建数据库记录失败时删除已保存文件。删除文档时先提交 SQLite 记录删除，再尽力清理对应磁盘文件；文件不存在时忽略，文件删除失败时记录日志但不恢复数据库记录。删除知识库及其文档记录使用一次数据库事务，提交成功后再清理关联磁盘文件。
+原始上传文件保存在 `backend/data/uploads/`，该目录不会提交到 Git。磁盘文件使用 UUID 生成的安全名称，用户提供的名称只记录在 `original_filename` 中，不参与路径拼接。创建数据库记录失败时删除已保存文件。删除单个 Document 时，若需要清理 Embedding，先以 SQLite transaction 将其标记为 `stale` 并清空有效 generation，再删除并验证该 Document 的 Chroma records 为零；随后才提交 SQLite 记录删除并尽力清理对应磁盘文件。Chroma 清理或验证失败会保留 Document、内容、Chunk 和文件并返回 503；Chroma 已清空但 SQLite 删除失败时，Document 保持可重试的 `stale`。从未 Embedding 的 `pending` Document 不打开 Chroma。
+
+删除 KnowledgeBase 时，先按 Document id 升序取得全部文档，在一个 SQLite transaction 中将所有需要清理的 Embedding 标记为 `stale`，再逐个删除并验证各自的 Chroma records。任一文档清理失败都会保留整个 KnowledgeBase 的 SQLite 数据和文件；此前已成功清理的文档仍保持 `stale`。只有全部清理成功后才在一个 SQLite transaction 中级联删除 KnowledgeBase、Document、DocumentContent 和 Chunk。单个 Document 或 KnowledgeBase 的 SQLite 删除成功后才 best-effort 删除文件；文件不存在时忽略，文件删除失败时记录 warning 但不恢复数据库记录。
 
 ## 7. 主要数据流
 

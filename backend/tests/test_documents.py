@@ -1,3 +1,5 @@
+from collections.abc import Callable, Generator
+from datetime import datetime
 from io import BytesIO
 import logging
 from pathlib import Path
@@ -8,9 +10,49 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import Document, DocumentContent, DocumentStatus, KnowledgeBase
+from app.database import get_db
+from app.models import (
+    Chunk,
+    Document,
+    DocumentContent,
+    DocumentEmbeddingStatus,
+    DocumentStatus,
+    KnowledgeBase,
+)
 from app.services import documents as document_service
 from app.services.documents import MAX_FILE_SIZE
+from app.services.embedding_cleanup import SAFE_EMBEDDING_CLEANUP_ERROR
+from app.stores import get_vector_store_factory
+
+
+class ApiDocumentCleanupVectorStore:
+    def __init__(
+        self,
+        *,
+        record_count: int = 0,
+        fail_delete: bool = False,
+        remaining_after_delete: int = 0,
+        on_delete: Callable[[int], None] | None = None,
+    ) -> None:
+        self.record_count = record_count
+        self.fail_delete = fail_delete
+        self.remaining_after_delete = remaining_after_delete
+        self.on_delete = on_delete
+        self.events: list[tuple[str, int]] = []
+
+    def delete_document_records(self, document_id: int) -> None:
+        self.events.append(("delete", document_id))
+        if self.on_delete is not None:
+            self.on_delete(document_id)
+        if self.fail_delete:
+            raise RuntimeError(
+                "raw Chroma failure /private/chroma/path sk-secret-test"
+            )
+        self.record_count = self.remaining_after_delete
+
+    def get_document_record_count(self, document_id: int) -> int:
+        self.events.append(("count", document_id))
+        return self.record_count
 
 
 def create_knowledge_base(client: TestClient) -> int:
@@ -36,6 +78,46 @@ def upload_file(
         f"/api/knowledge-bases/{knowledge_base_id}/documents",
         files={"file": (filename, BytesIO(content), content_type)},
     )
+
+
+def add_document_graph(
+    session: Session,
+    document_id: int,
+    *,
+    embedding_status: DocumentEmbeddingStatus = DocumentEmbeddingStatus.EMBEDDED,
+    generation_id: str | None = "a" * 32,
+) -> tuple[int, int]:
+    document = session.get(Document, document_id)
+    assert document is not None
+    document.status = DocumentStatus.PARSED.value
+    document.embedding_status = embedding_status.value
+    document.embedding_generation_id = generation_id
+    document.embedded_at = (
+        datetime(2026, 9, 13, 12, 0) if generation_id is not None else None
+    )
+    document.embedding_error = (
+        "Previous embedding cleanup failed"
+        if embedding_status == DocumentEmbeddingStatus.STALE
+        else None
+    )
+    content = DocumentContent(
+        document_id=document_id,
+        sequence=0,
+        text="Indexed content",
+        source_type="line",
+        source_start=1,
+        source_end=1,
+    )
+    chunk = Chunk(
+        document_content=content,
+        sequence=0,
+        text="Indexed content",
+        start_offset=0,
+        end_offset=len("Indexed content"),
+    )
+    session.add(content)
+    session.commit()
+    return content.id, chunk.id
 
 
 def test_pdf_upload_creates_record_and_saved_file(
@@ -336,6 +418,12 @@ def test_delete_document_removes_record_and_file(
     upload_directory: Path,
     test_session_factory: sessionmaker[Session],
 ) -> None:
+    def fail_if_chroma_opens() -> ApiDocumentCleanupVectorStore:
+        raise AssertionError("Chroma must not open without an old embedding")
+
+    client.app.dependency_overrides[get_vector_store_factory] = lambda: (
+        fail_if_chroma_opens
+    )
     knowledge_base_id = create_knowledge_base(client)
     uploaded = upload_file(client, knowledge_base_id).json()
     stored_path = upload_directory / uploaded["filename"]
@@ -349,6 +437,262 @@ def test_delete_document_removes_record_and_file(
     assert list(upload_directory.iterdir()) == []
     with test_session_factory() as session:
         assert session.get(Document, uploaded["id"]) is None
+
+
+def test_delete_embedded_document_cleans_chroma_before_database_and_file(
+    client: TestClient,
+    upload_directory: Path,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+    document_id = uploaded["id"]
+    assert isinstance(document_id, int)
+    stored_path = upload_directory / uploaded["filename"]
+    with test_session_factory() as session:
+        content_id, chunk_id = add_document_graph(session, document_id)
+
+    observed_stale_state: list[tuple[str, str | None, bool]] = []
+
+    def observe_stale_before_chroma(cleaned_document_id: int) -> None:
+        with test_session_factory() as inspection_session:
+            document = inspection_session.get(Document, cleaned_document_id)
+            assert document is not None
+            observed_stale_state.append(
+                (
+                    document.embedding_status,
+                    document.embedding_generation_id,
+                    stored_path.is_file(),
+                )
+            )
+            assert document.embedded_at is None
+            assert document.embedding_error is None
+            assert inspection_session.get(DocumentContent, content_id) is not None
+            assert inspection_session.get(Chunk, chunk_id) is not None
+
+    vector_store = ApiDocumentCleanupVectorStore(
+        record_count=2,
+        on_delete=observe_stale_before_chroma,
+    )
+    client.app.dependency_overrides[get_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+
+    response = client.delete(f"/api/documents/{document_id}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert observed_stale_state == [
+        (DocumentEmbeddingStatus.STALE.value, None, True)
+    ]
+    assert vector_store.events == [("delete", document_id), ("count", document_id)]
+    assert not stored_path.exists()
+    with test_session_factory() as session:
+        assert session.get(Document, document_id) is None
+        assert session.get(DocumentContent, content_id) is None
+        assert session.get(Chunk, chunk_id) is None
+
+
+def test_delete_document_cleanup_failure_returns_503_and_preserves_everything(
+    client: TestClient,
+    upload_directory: Path,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    vector_store = ApiDocumentCleanupVectorStore(
+        record_count=2,
+        fail_delete=True,
+    )
+    client.app.dependency_overrides[get_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+    document_id = uploaded["id"]
+    assert isinstance(document_id, int)
+    stored_path = upload_directory / uploaded["filename"]
+    with test_session_factory() as session:
+        content_id, chunk_id = add_document_graph(session, document_id)
+
+    response = client.delete(f"/api/documents/{document_id}")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": SAFE_EMBEDDING_CLEANUP_ERROR}
+    assert "raw Chroma failure" not in response.text
+    assert "/private/chroma/path" not in response.text
+    assert "sk-secret-test" not in response.text
+    assert stored_path.is_file()
+    with test_session_factory() as session:
+        document = session.get(Document, document_id)
+        assert document is not None
+        assert document.embedding_status == DocumentEmbeddingStatus.STALE.value
+        assert document.embedding_generation_id is None
+        assert document.embedded_at is None
+        assert document.embedding_error == SAFE_EMBEDDING_CLEANUP_ERROR
+        assert session.get(DocumentContent, content_id) is not None
+        assert session.get(Chunk, chunk_id) is not None
+
+
+def test_delete_document_verification_failure_does_not_delete_sqlite_or_file(
+    client: TestClient,
+    upload_directory: Path,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    vector_store = ApiDocumentCleanupVectorStore(
+        record_count=2,
+        remaining_after_delete=1,
+    )
+    client.app.dependency_overrides[get_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+    document_id = uploaded["id"]
+    assert isinstance(document_id, int)
+    stored_path = upload_directory / uploaded["filename"]
+    with test_session_factory() as session:
+        content_id, chunk_id = add_document_graph(session, document_id)
+
+    response = client.delete(f"/api/documents/{document_id}")
+
+    assert response.status_code == 503
+    assert vector_store.events == [("delete", document_id), ("count", document_id)]
+    assert stored_path.is_file()
+    with test_session_factory() as session:
+        document = session.get(Document, document_id)
+        assert document is not None
+        assert document.embedding_status == DocumentEmbeddingStatus.STALE.value
+        assert document.embedding_generation_id is None
+        assert document.embedded_at is None
+        assert document.embedding_error == SAFE_EMBEDDING_CLEANUP_ERROR
+        assert session.get(DocumentContent, content_id) is not None
+        assert session.get(Chunk, chunk_id) is not None
+
+
+def test_delete_stale_document_succeeds_when_chroma_is_already_empty(
+    client: TestClient,
+    upload_directory: Path,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    vector_store = ApiDocumentCleanupVectorStore(record_count=0)
+    client.app.dependency_overrides[get_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+    document_id = uploaded["id"]
+    assert isinstance(document_id, int)
+    stored_path = upload_directory / uploaded["filename"]
+    with test_session_factory() as session:
+        add_document_graph(
+            session,
+            document_id,
+            embedding_status=DocumentEmbeddingStatus.STALE,
+            generation_id=None,
+        )
+
+    response = client.delete(f"/api/documents/{document_id}")
+
+    assert response.status_code == 204
+    assert vector_store.events == [("delete", document_id), ("count", document_id)]
+    assert not stored_path.exists()
+    with test_session_factory() as session:
+        assert session.get(Document, document_id) is None
+
+
+def test_delete_database_commit_failure_keeps_stale_document_and_can_retry(
+    client: TestClient,
+    upload_directory: Path,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    vector_store = ApiDocumentCleanupVectorStore(record_count=2)
+    client.app.dependency_overrides[get_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+    document_id = uploaded["id"]
+    assert isinstance(document_id, int)
+    stored_path = upload_directory / uploaded["filename"]
+    with test_session_factory() as session:
+        content_id, chunk_id = add_document_graph(session, document_id)
+
+    original_db_override = client.app.dependency_overrides[get_db]
+
+    def override_failed_delete_db() -> Generator[Session, None, None]:
+        with test_session_factory() as session:
+            real_commit = session.commit
+            commit_count = 0
+
+            def fail_delete_commit() -> None:
+                nonlocal commit_count
+                commit_count += 1
+                if commit_count == 2:
+                    session.flush()
+                    raise RuntimeError("database delete failed")
+                real_commit()
+
+            session.commit = fail_delete_commit  # type: ignore[method-assign]
+            yield session
+
+    client.app.dependency_overrides[get_db] = override_failed_delete_db
+    try:
+        failed_response = client.delete(f"/api/documents/{document_id}")
+    finally:
+        client.app.dependency_overrides[get_db] = original_db_override
+
+    assert failed_response.status_code == 500
+    assert failed_response.json() == {"detail": "Document could not be deleted"}
+    assert vector_store.record_count == 0
+    assert stored_path.is_file()
+    with test_session_factory() as session:
+        document = session.get(Document, document_id)
+        assert document is not None
+        assert document.embedding_status == DocumentEmbeddingStatus.STALE.value
+        assert document.embedding_generation_id is None
+        assert document.embedded_at is None
+        assert document.embedding_error is None
+        assert session.get(DocumentContent, content_id) is not None
+        assert session.get(Chunk, chunk_id) is not None
+
+    retry_response = client.delete(f"/api/documents/{document_id}")
+
+    assert retry_response.status_code == 204
+    assert vector_store.events == [
+        ("delete", document_id),
+        ("count", document_id),
+        ("delete", document_id),
+        ("count", document_id),
+    ]
+    assert not stored_path.exists()
+    with test_session_factory() as session:
+        assert session.get(Document, document_id) is None
+
+
+def test_delete_embedding_failed_document_with_generation_runs_cleanup(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    vector_store = ApiDocumentCleanupVectorStore(record_count=1)
+    client.app.dependency_overrides[get_vector_store_factory] = lambda: (
+        lambda: vector_store
+    )
+    knowledge_base_id = create_knowledge_base(client)
+    uploaded = upload_file(client, knowledge_base_id).json()
+    document_id = uploaded["id"]
+    assert isinstance(document_id, int)
+    with test_session_factory() as session:
+        add_document_graph(
+            session,
+            document_id,
+            embedding_status=DocumentEmbeddingStatus.EMBEDDING_FAILED,
+        )
+
+    response = client.delete(f"/api/documents/{document_id}")
+
+    assert response.status_code == 204
+    assert vector_store.events == [("delete", document_id), ("count", document_id)]
+    with test_session_factory() as session:
+        assert session.get(Document, document_id) is None
 
 
 def test_delete_missing_document_returns_404(client: TestClient) -> None:

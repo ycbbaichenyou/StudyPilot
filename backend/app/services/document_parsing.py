@@ -11,7 +11,9 @@ from app.document_processing.exceptions import (
 from app.document_processing.parsers import get_parser
 from app.document_processing.schemas import ParsedTextUnit
 from app.models import Document, DocumentContent, DocumentStatus
+from app.services import embedding_cleanup
 from app.services.documents import get_stored_file_path
+from app.stores import get_vector_store
 
 
 def _naive_utc_now() -> datetime:
@@ -40,7 +42,8 @@ def _replace_document_contents(
     session: Session,
     document: Document,
     parsed_units: list[ParsedTextUnit],
-) -> None:
+) -> bool:
+    cleanup_required = embedding_cleanup.document_needs_embedding_cleanup(document)
     session.execute(
         delete(DocumentContent).where(DocumentContent.document_id == document.id)
     )
@@ -60,7 +63,10 @@ def _replace_document_contents(
     document.status = DocumentStatus.PARSED.value
     document.parsed_at = _naive_utc_now()
     document.parse_error = None
+    if cleanup_required:
+        embedding_cleanup.mark_document_embedding_stale(document)
     session.commit()
+    return cleanup_required
 
 
 def _mark_as_failed(
@@ -91,6 +97,7 @@ def parse_document(
     document_id: int,
     *,
     upload_directory: Path,
+    vector_store_factory: embedding_cleanup.VectorStoreFactory = get_vector_store,
 ) -> Document | None:
     document = session.get(Document, document_id)
     if document is None:
@@ -107,8 +114,11 @@ def parse_document(
         return _mark_as_failed(session, document_id, _safe_parse_error(exc))
 
     try:
-        _replace_document_contents(session, document, parsed_units)
-        return document
+        cleanup_required = _replace_document_contents(
+            session,
+            document,
+            parsed_units,
+        )
     except Exception:
         session.rollback()
         return _mark_as_failed(
@@ -116,3 +126,11 @@ def parse_document(
             document_id,
             "Parsed document content could not be saved",
         )
+
+    if cleanup_required:
+        document = embedding_cleanup.cleanup_stale_document_embedding(
+            session,
+            document_id,
+            vector_store_factory=vector_store_factory,
+        )
+    return document

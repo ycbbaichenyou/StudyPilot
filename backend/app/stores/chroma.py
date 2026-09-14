@@ -206,6 +206,29 @@ class ChromaVectorStore:
                 "A Chroma embedding generation could not be removed"
             ) from exc
 
+    def delete_document_records(self, document_id: int) -> None:
+        try:
+            self._collection.delete(where={"document_id": document_id})
+        except Exception as exc:
+            raise ChromaVectorStoreError(
+                "Chroma records for the document could not be removed"
+            ) from exc
+
+    def get_document_record_count(self, document_id: int) -> int:
+        try:
+            result = self._collection.get(
+                where={"document_id": document_id},
+                include=[],
+            )
+            ids = result.get("ids")
+            if not isinstance(ids, list):
+                raise TypeError
+            return len(ids)
+        except Exception as exc:
+            raise ChromaVectorStoreError(
+                "Chroma records for the document could not be verified"
+            ) from exc
+
 
 def get_chroma_path() -> Path:
     configured_path = os.environ.get("STUDYPILOT_CHROMA_PATH")

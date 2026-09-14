@@ -30,6 +30,7 @@ class DocumentEmbeddingStatus(StrEnum):
     EMBEDDING = "embedding"
     EMBEDDED = "embedded"
     EMBEDDING_FAILED = "embedding_failed"
+    STALE = "stale"
 
 
 class Document(Base):

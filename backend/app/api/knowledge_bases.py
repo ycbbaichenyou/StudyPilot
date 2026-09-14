@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -9,12 +10,18 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import KnowledgeBase
 from app.services import documents as document_service
+from app.services import embedding_cleanup as embedding_cleanup_service
 from app.services import knowledge_bases as knowledge_base_service
+from app.stores import ChromaVectorStore, get_vector_store_factory
 
 
 router = APIRouter(prefix="/api/knowledge-bases", tags=["knowledge-bases"])
 DatabaseSession = Annotated[Session, Depends(get_db)]
 UploadDirectory = Annotated[Path, Depends(document_service.get_upload_directory)]
+VectorStoreFactory = Annotated[
+    Callable[[], ChromaVectorStore],
+    Depends(get_vector_store_factory),
+]
 
 
 class KnowledgeBaseCreate(BaseModel):
@@ -93,12 +100,28 @@ def delete_knowledge_base(
     knowledge_base_id: int,
     session: DatabaseSession,
     upload_directory: UploadDirectory,
+    vector_store_factory: VectorStoreFactory,
 ) -> Response:
-    deleted = knowledge_base_service.delete_knowledge_base(
-        session,
-        knowledge_base_id,
-        upload_directory=upload_directory,
-    )
+    try:
+        deleted = knowledge_base_service.delete_knowledge_base(
+            session,
+            knowledge_base_id,
+            upload_directory=upload_directory,
+            vector_store_factory=vector_store_factory,
+        )
+    except embedding_cleanup_service.DocumentEmbeddingCleanupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=embedding_cleanup_service.SAFE_EMBEDDING_CLEANUP_ERROR,
+        ) from exc
+    except (
+        embedding_cleanup_service.DocumentEmbeddingCleanupPersistenceError,
+        knowledge_base_service.KnowledgeBaseDeletionPersistenceError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Knowledge base could not be deleted",
+        ) from exc
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

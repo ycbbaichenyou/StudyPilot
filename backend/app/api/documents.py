@@ -24,6 +24,7 @@ from app.services import document_chunking as document_chunking_service
 from app.services import document_embedding as document_embedding_service
 from app.services import document_parsing as document_parsing_service
 from app.services import documents as document_service
+from app.services import embedding_cleanup as embedding_cleanup_service
 from app.stores import ChromaVectorStore, get_vector_store_factory
 
 
@@ -271,11 +272,13 @@ def get_document_chunks(
 def rebuild_document_chunks(
     document_id: int,
     session: DatabaseSession,
+    vector_store_factory: VectorStoreFactory,
 ) -> DocumentChunksResponse:
     try:
         result = document_chunking_service.rebuild_document_chunks(
             session,
             document_id,
+            vector_store_factory=vector_store_factory,
         )
     except document_chunking_service.DocumentNotReadyForChunkingError as exc:
         raise HTTPException(
@@ -286,6 +289,18 @@ def rebuild_document_chunks(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Document chunks could not be saved",
+        ) from exc
+    except embedding_cleanup_service.DocumentEmbeddingCleanupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=embedding_cleanup_service.SAFE_EMBEDDING_CLEANUP_ERROR,
+        ) from exc
+    except (
+        embedding_cleanup_service.DocumentEmbeddingCleanupPersistenceError
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document embedding cleanup status could not be saved",
         ) from exc
 
     if result is None:
@@ -362,17 +377,31 @@ def parse_document(
     document_id: int,
     session: DatabaseSession,
     upload_directory: UploadDirectory,
+    vector_store_factory: VectorStoreFactory,
 ) -> Document:
     try:
         document = document_parsing_service.parse_document(
             session,
             document_id,
             upload_directory=upload_directory,
+            vector_store_factory=vector_store_factory,
         )
     except DocumentParsingPersistenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Document parsing status could not be saved",
+        ) from exc
+    except embedding_cleanup_service.DocumentEmbeddingCleanupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=embedding_cleanup_service.SAFE_EMBEDDING_CLEANUP_ERROR,
+        ) from exc
+    except (
+        embedding_cleanup_service.DocumentEmbeddingCleanupPersistenceError
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document embedding cleanup status could not be saved",
         ) from exc
 
     if document is None:
@@ -388,12 +417,28 @@ def delete_document(
     document_id: int,
     session: DatabaseSession,
     upload_directory: UploadDirectory,
+    vector_store_factory: VectorStoreFactory,
 ) -> Response:
-    deleted = document_service.delete_document(
-        session,
-        document_id,
-        upload_directory=upload_directory,
-    )
+    try:
+        deleted = document_service.delete_document(
+            session,
+            document_id,
+            upload_directory=upload_directory,
+            vector_store_factory=vector_store_factory,
+        )
+    except embedding_cleanup_service.DocumentEmbeddingCleanupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=embedding_cleanup_service.SAFE_EMBEDDING_CLEANUP_ERROR,
+        ) from exc
+    except (
+        embedding_cleanup_service.DocumentEmbeddingCleanupPersistenceError,
+        document_service.DocumentDeletionPersistenceError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document could not be deleted",
+        ) from exc
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

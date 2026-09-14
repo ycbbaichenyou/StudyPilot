@@ -25,6 +25,10 @@ from app.models import (
 )
 
 
+def test_document_embedding_status_includes_stale() -> None:
+    assert DocumentEmbeddingStatus.STALE.value == "stale"
+
+
 def test_default_database_url_uses_stable_absolute_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

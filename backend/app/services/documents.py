@@ -7,6 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Document, DocumentContent
+from app.services import embedding_cleanup
+from app.stores import get_vector_store
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,10 @@ class DocumentValidationError(ValueError):
 
 
 class DocumentTooLargeError(DocumentValidationError):
+    pass
+
+
+class DocumentDeletionPersistenceError(RuntimeError):
     pass
 
 
@@ -169,19 +175,39 @@ def delete_document(
     document_id: int,
     *,
     upload_directory: Path,
+    vector_store_factory: embedding_cleanup.VectorStoreFactory = get_vector_store,
 ) -> bool:
     document = session.get(Document, document_id)
     if document is None:
         return False
 
     filename = document.filename
+    cleanup_required = embedding_cleanup.document_needs_embedding_cleanup(document)
+
+    if cleanup_required:
+        embedding_cleanup.mark_document_embedding_stale(document)
+        try:
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            raise DocumentDeletionPersistenceError(
+                "The document embedding stale status could not be saved"
+            ) from exc
+
+        embedding_cleanup.cleanup_document_embedding(
+            session,
+            document_id,
+            vector_store_factory=vector_store_factory,
+        )
 
     try:
         session.delete(document)
         session.commit()
-    except Exception:
+    except Exception as exc:
         session.rollback()
-        raise
+        raise DocumentDeletionPersistenceError(
+            "The document could not be deleted"
+        ) from exc
 
     delete_stored_file(
         upload_directory=upload_directory,

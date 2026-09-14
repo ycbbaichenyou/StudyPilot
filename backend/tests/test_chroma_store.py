@@ -12,14 +12,19 @@ from app.stores.chroma import (
 )
 
 
-def _record(generation_id: str, chunk_id: int) -> ChromaRecord:
+def _record(
+    generation_id: str,
+    chunk_id: int,
+    *,
+    document_id: int = 1,
+) -> ChromaRecord:
     return ChromaRecord(
         id=f"{generation_id}:{chunk_id}",
         text=f"Chunk {chunk_id}",
         embedding=[0.1, 0.2, 0.3],
         metadata={
             "generation_id": generation_id,
-            "document_id": 1,
+            "document_id": document_id,
             "chunk_id": chunk_id,
         },
     )
@@ -68,6 +73,32 @@ def test_chroma_store_deletes_only_requested_generation(tmp_path: Path) -> None:
         embedding_function=None,
     )
     assert collection.get()["ids"] == ["current:1"]
+
+
+def test_chroma_store_deletes_all_records_for_only_requested_document(
+    tmp_path: Path,
+) -> None:
+    chroma_path = tmp_path / "chroma"
+    store = ChromaVectorStore(path=chroma_path, dimensions=3)
+    store.add_records(
+        [
+            _record("old", 1),
+            _record("current", 2),
+            _record("other", 3, document_id=2),
+        ]
+    )
+    assert store.get_document_record_count(1) == 2
+    assert store.get_document_record_count(2) == 1
+
+    store.delete_document_records(1)
+
+    collection = chromadb.PersistentClient(path=str(chroma_path)).get_collection(
+        store.collection_name,
+        embedding_function=None,
+    )
+    assert collection.get()["ids"] == ["other:3"]
+    assert store.get_document_record_count(1) == 0
+    assert store.get_document_record_count(2) == 1
 
 
 def test_persistent_collection_is_reopened_with_verified_cosine_configuration(

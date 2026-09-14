@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.document_processing import chunking
 from app.models import Chunk, Document, DocumentContent, DocumentStatus
+from app.services import embedding_cleanup
+from app.stores import get_vector_store
 
 
 class DocumentNotReadyForChunkingError(ValueError):
@@ -38,6 +40,7 @@ def rebuild_document_chunks(
     *,
     chunk_size: int = chunking.DEFAULT_CHUNK_SIZE,
     overlap: int = chunking.DEFAULT_CHUNK_OVERLAP,
+    vector_store_factory: embedding_cleanup.VectorStoreFactory = get_vector_store,
 ) -> tuple[Document, list[Chunk]] | None:
     document = session.get(Document, document_id)
     if document is None:
@@ -54,17 +57,17 @@ def rebuild_document_chunks(
     )
     contents = list(session.scalars(contents_statement).all())
 
-    chunk_drafts: list[tuple[DocumentContent, chunking.ChunkDraft]] = []
-    for content in contents:
-        drafts = chunking.split_text(
-            content.text,
-            chunk_size=chunk_size,
-            overlap=overlap,
-        )
-        chunk_drafts.extend((content, draft) for draft in drafts)
-
-    content_ids = [content.id for content in contents]
     try:
+        chunk_drafts: list[tuple[DocumentContent, chunking.ChunkDraft]] = []
+        for content in contents:
+            drafts = chunking.split_text(
+                content.text,
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+            chunk_drafts.extend((content, draft) for draft in drafts)
+
+        content_ids = [content.id for content in contents]
         chunks = [
             Chunk(
                 document_content=content,
@@ -80,10 +83,22 @@ def rebuild_document_chunks(
                 delete(Chunk).where(Chunk.document_content_id.in_(content_ids))
             )
         session.add_all(chunks)
+        cleanup_required = embedding_cleanup.document_needs_embedding_cleanup(
+            document
+        )
+        if cleanup_required:
+            embedding_cleanup.mark_document_embedding_stale(document)
         session.commit()
-        return document, chunks
     except Exception as exc:
         session.rollback()
         raise DocumentChunkingPersistenceError(
             "Document chunks could not be saved"
         ) from exc
+
+    if cleanup_required:
+        document = embedding_cleanup.cleanup_stale_document_embedding(
+            session,
+            document_id,
+            vector_store_factory=vector_store_factory,
+        )
+    return document, chunks
