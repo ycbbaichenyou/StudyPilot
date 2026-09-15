@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 
+import { renderBasicMarkdown } from '../utils/markdown.js'
 import CitationList from './CitationList.vue'
 import StatusBadge from './StatusBadge.vue'
 
@@ -9,45 +10,79 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  loading: {
+    type: Boolean,
+    default: false,
+  },
+  error: {
+    type: String,
+    default: '',
+  },
 })
 
-const citationMessage = computed(() => {
-  const messages = {
-    valid: '回答中的引用编号均能对应到本次上下文。',
-    missing: '模型回答没有给出引用，请谨慎核对内容。',
-    invalid_reference: '模型使用了不存在的引用编号，答案已保留供核查。',
+const renderedAnswer = computed(() =>
+  renderBasicMarkdown(props.result?.answer ?? ''),
+)
+const displayedStatus = computed(() => {
+  if (props.loading) {
+    return 'processing'
   }
-  return messages[props.result?.citation_status] ?? ''
+  if (props.error) {
+    return 'answer_error'
+  }
+  return props.result?.status ?? 'unknown'
 })
 </script>
 
 <template>
-  <section v-if="result" class="answer-card" aria-live="polite">
+  <section
+    v-if="loading || error || result"
+    class="answer-card"
+    aria-live="polite"
+  >
     <div class="answer-header">
       <div>
         <p class="section-kicker">Grounded answer</p>
         <h2>回答</h2>
       </div>
-      <StatusBadge :status="result.status" />
+      <StatusBadge :status="displayedStatus" />
     </div>
 
-    <div v-if="result.status === 'insufficient_context'" class="empty-answer">
-      <strong>现有资料不足以回答这个问题</strong>
-      <p>可以补充并完成文档索引，或换一种更贴近资料内容的问法。</p>
+    <div v-if="loading" class="answer-loading">
+      <strong>正在准备基于资料的回答</strong>
+      <div class="answer-loading-steps">
+        <span><i></i>正在检索资料...</span>
+        <span><i></i>正在生成回答...</span>
+      </div>
+    </div>
+
+    <div v-else-if="error" class="answer-error-state" role="alert">
+      <strong>回答生成失败</strong>
+      <p>{{ error }}</p>
+      <small>请检查服务状态后重新提交，当前不会保存失败的问题。</small>
+    </div>
+
+    <div
+      v-else-if="result.status === 'insufficient_context'"
+      class="empty-answer"
+    >
+      <strong>当前资料不足，未找到可用于回答的内容</strong>
+      <p>建议上传更多相关文档并完成索引，或换一种更贴近资料的问法。</p>
     </div>
 
     <template v-else>
-      <p class="answer-text">{{ result.answer }}</p>
-      <div class="citation-integrity" :data-status="result.citation_status">
-        <StatusBadge :status="result.citation_status" />
-        <span>{{ citationMessage }}</span>
-      </div>
-      <CitationList :citations="result.citations" />
+      <div class="markdown-answer" v-html="renderedAnswer"></div>
+      <CitationList
+        :citations="result.citations"
+        :citation-status="result.citation_status"
+      />
     </template>
 
-    <footer class="answer-meta">
+    <footer v-if="result" class="answer-meta">
       <span>使用上下文 {{ result.used_context_characters }} 字符</span>
-      <span v-if="result.context_truncated">上下文已按预算截断</span>
+      <span v-if="result.context_truncated" class="context-truncated">
+        上下文已按预算截断
+      </span>
     </footer>
   </section>
 </template>

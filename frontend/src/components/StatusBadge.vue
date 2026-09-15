@@ -25,6 +25,7 @@ const statusLabels = {
   valid: '引用有效',
   missing: '缺少引用',
   invalid_reference: '引用异常',
+  answer_error: '回答失败',
   unknown: '未知状态',
 }
 
@@ -45,6 +46,7 @@ const statusTones = {
   parse_failed: 'danger',
   embedding_failed: 'danger',
   invalid_reference: 'danger',
+  answer_error: 'danger',
 }
 
 const label = computed(() => statusLabels[props.status] ?? props.status)

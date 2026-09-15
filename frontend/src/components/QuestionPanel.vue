@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   knowledgeBaseId: {
@@ -18,15 +18,14 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
-  error: {
-    type: String,
-    default: '',
-  },
 })
 
 const emit = defineEmits(['submit'])
 const query = ref('')
 const fieldError = ref('')
+const canSubmit = computed(
+  () => props.canAsk && !props.loading && Boolean(query.value.trim()),
+)
 
 function submitQuestion() {
   const cleanedQuery = query.value.trim()
@@ -41,6 +40,14 @@ function submitQuestion() {
 
   fieldError.value = ''
   emit('submit', cleanedQuery)
+}
+
+function handleEnter(event) {
+  if (event.shiftKey || event.isComposing) {
+    return
+  }
+  event.preventDefault()
+  submitQuestion()
 }
 
 watch(
@@ -71,15 +78,21 @@ watch(
         placeholder="例如：资料中如何定义增长率？"
         :disabled="loading"
         @input="fieldError = ''"
+        @keydown.enter="handleEnter"
       />
       <div class="question-actions">
         <p class="question-hint">
-          {{ canAsk ? '回答将附带实际引用的资料来源。' : disabledReason }}
+          <span>
+            {{ canAsk ? '回答将附带实际引用的资料来源。' : disabledReason }}
+          </span>
+          <small v-if="canAsk" class="keyboard-hint">
+            Enter 提交 · Shift + Enter 换行
+          </small>
         </p>
         <button
           class="button button-primary ask-button"
           type="submit"
-          :disabled="loading || !canAsk"
+          :disabled="!canSubmit"
         >
           {{ loading ? '正在检索并生成…' : '生成回答' }}
         </button>
@@ -87,6 +100,5 @@ watch(
     </form>
 
     <p v-if="fieldError" class="field-error">{{ fieldError }}</p>
-    <p v-if="error" class="panel-error" role="alert">{{ error }}</p>
   </section>
 </template>

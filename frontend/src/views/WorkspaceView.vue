@@ -113,11 +113,17 @@ onMounted(loadKnowledgeBases)
             :can-ask="hasEmbeddedDocument"
             :disabled-reason="questionDisabledReason"
             :loading="isAnswering"
-            :error="answerError"
             @submit="askQuestion"
           />
-          <AnswerPanel :result="answerResult" />
-          <div v-if="!answerResult && !isAnswering" class="answer-placeholder">
+          <AnswerPanel
+            :result="answerResult"
+            :loading="isAnswering"
+            :error="answerError"
+          />
+          <div
+            v-if="!answerResult && !isAnswering && !answerError"
+            class="answer-placeholder"
+          >
             <span>[1]</span>
             <h3>答案会出现在这里</h3>
             <p>StudyPilot 会保留模型实际使用且有效的引用来源。</p>
