@@ -1,6 +1,10 @@
 <script setup>
 import { computed } from 'vue'
 
+import {
+  formatDistance,
+  formatSourceLocation,
+} from '../utils/ragPresentation.js'
 import StatusBadge from './StatusBadge.vue'
 
 const props = defineProps({
@@ -14,14 +18,6 @@ const props = defineProps({
   },
 })
 
-function sourceLabel(citation) {
-  const range =
-    citation.source_start === citation.source_end
-      ? `${citation.source_start}`
-      : `${citation.source_start}–${citation.source_end}`
-  return `${citation.source_type} ${range}`
-}
-
 function documentType(citation) {
   const filename = citation.original_filename ?? ''
   const extension = filename.includes('.')
@@ -34,11 +30,6 @@ function documentType(citation) {
     md: 'Markdown',
   }
   return labels[extension] ?? 'Document'
-}
-
-function formatDistance(distance) {
-  const numericDistance = Number(distance)
-  return Number.isFinite(numericDistance) ? numericDistance.toFixed(4) : '—'
 }
 
 const statusMessage = computed(() => {
@@ -77,7 +68,7 @@ const statusMessage = computed(() => {
           <strong>{{ citation.original_filename }}</strong>
           <span class="citation-source">
             <b>{{ documentType(citation) }}</b>
-            <span>{{ sourceLabel(citation) }}</span>
+            <span>{{ formatSourceLocation(citation) }}</span>
           </span>
         </div>
         <div class="citation-metrics">

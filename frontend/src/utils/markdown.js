@@ -8,6 +8,7 @@ function escapeHtml(value) {
 }
 
 function renderInline(value) {
+  // Model output is untrusted; escape it before adding the supported markup.
   return escapeHtml(value)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/__(.+?)__/g, '<strong>$1</strong>')

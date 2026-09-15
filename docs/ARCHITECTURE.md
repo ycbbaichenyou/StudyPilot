@@ -4,9 +4,9 @@
 
 本文记录 StudyPilot 当前已经确定的 V1 架构边界，作为后续设计和实现的共同基线。
 
-当前仓库已完成 V1 Stage 6-4。Stage 0 已完成可独立启动的最小 FastAPI 后端、`GET /api/health`、对应自动化测试，以及可独立启动的最小 Vue 3 + Vite 前端骨架。Stage 1 已增加 SQLite、SQLAlchemy 2.x、`KnowledgeBase` 和 `Document` 基础模型，并提供知识库的最小创建、查询和删除 API。Stage 2 增加了原始文档上传、保存、列表和删除能力。Stage 3-1 引入 Alembic 数据库迁移基础设施，并以 Stage 2 数据库结构建立首个基线 revision。Stage 3-2 增加文档解析状态、错误与完成时间字段，以及保存有序解析文本单元和来源位置的 `DocumentContent` 模型。Stage 3-3 实现 PDF、DOCX、TXT 和 Markdown 的显式解析 Pipeline，并通过应用服务将解析结果原子替换到 `DocumentContent`。Stage 4-1 增加单个文档信息和解析内容查询 API；解析内容由查询服务显式按 `sequence` 升序返回。Stage 4-2 增加 `Chunk` 模型、确定性的字符分块器，以及显式创建、重建和查询 Chunk 的 API。Stage 5-1 增加文档 Embedding 状态、DashScope `text-embedding-v4` 适配器、Chroma 持久化边界，以及显式创建和查询 Embedding 状态的 API。Stage 5-2 增加 `stale` Embedding 状态和按 Document 清理 Chroma 的统一边界，并在 Chunk 重建、成功重新解析、单个 Document 删除和 KnowledgeBase 删除时维护跨 SQLite、Chroma 与上传文件的生命周期一致性。Stage 6-1 增加 Query Embedding、基于 record allowlist 的 Chroma cosine search、SQLite 来源重载与二次有效性校验，以及知识库 Search API。Stage 6-2 增加独立 Context Assembly 服务及 Context API，在不改变 Retrieval 的前提下按字符预算组装完整 Chunk 和引用信息。Stage 6-3 增加固定 Prompt Builder、DashScope `qwen-plus` LLM Adapter、同步 Answer Generation Service 和 Answer API。Stage 6-4 增加回答引用编号校验、只返回模型实际引用来源的 Answer API 契约，以及不调用真实模型的固定 RAG 评测基线。前端与后端当前仍是各自独立运行，尚未实现业务级界面交互。
+当前仓库已完成 V1 Stage 7.5-3。Stage 0 至 Stage 6-4 已建立 FastAPI、SQLite/SQLAlchemy/Alembic、文档上传与解析、Chunk、Embedding 生命周期、Retrieval、Context Assembly、Prompt、Answer Generation、Citation Validation 和固定 RAG 评测基线。Stage 7 已将这些能力接入 Vue 3 工作台；Stage 7.5 增加知识库与文档删除、失败重试、Markdown 回答、引用状态，以及不改变正常 Answer 流程的 Retrieval、Context 和 Answer 调试视图。前后端仍独立运行，开发环境通过 Vite `/api` proxy 通信。
 
-基础向量检索、Context Assembly、Prompt、单轮 Answer Generation 和 Citation Validation 已经实现；Agent、Tool Calling、Memory、多轮对话和前端问答界面尚未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，Chroma 保存 Chunk 的向量副本，三者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析、分块、Embedding、Search、Context 和 Answer 接口外的后续业务接口与界面细节仍需在对应任务中按最小需求确定。
+基础向量检索、Context Assembly、Prompt、单轮 Answer Generation、Citation Validation 和前端产品工作台已经实现；Agent、Tool Calling、Memory 和多轮对话仍未实现。`DocumentContent` 保存原始解析文本单元，`Chunk` 保存从单个 DocumentContent 派生的字符切片，Chroma 保存 Chunk 的向量副本，三者职责不同。本文中的“确定”表示后续 V1 实现必须遵守的方向；除当前知识库、文档管理、文档解析、分块、Embedding、Search、Context 和 Answer 接口外的后续业务接口与界面细节仍需在对应任务中按最小需求确定。
 
 ## 2. V1 目标
 
@@ -244,8 +244,8 @@ Stage 6-1 至 Stage 6-4 中 SQLite 是检索资格和返回业务字段的事实
   → 构建固定提示词
   → 调用 DashScope qwen-plus
   → 校验模型答案中的引用编号
-  → 返回单轮答案和模型实际引用的有效来源（Stage 6-4 截止）
-  → 返回前端展示（尚未实现）
+  → 返回单轮答案和模型实际引用的有效来源
+  → Vue 3 工作台展示回答、引用状态和调试指标
 ```
 
 没有检索到足够上下文或模型调用失败时，应返回明确、可处理的结果，不能伪造来源或静默生成看似确定的答案。
@@ -259,9 +259,9 @@ Stage 6-1 至 Stage 6-4 中 SQLite 是检索资格和返回业务字段的事实
 - 日志和错误响应不得包含密钥、完整提示词中的敏感内容、内部堆栈或不必要的本地绝对路径。
 - 上传文件必须在进入解析器前检查允许的类型和必要的大小边界；具体限制值由实现任务确定。
 
-## 9. 建议的代码组织
+## 9. 当前代码组织
 
-下列目录是后续实现阶段的基线建议。Stage 1 已按实际职责增加数据库、模型、知识库 API 和轻量业务操作模块；其余目录应在真实职责出现时逐步落地，不要一次生成空目录和占位模块。
+当前目录按已经存在的职责保持轻量分层；不为尚未出现的需求创建空目录或占位模块。
 
 ```text
 StudyPilot/
@@ -273,20 +273,22 @@ StudyPilot/
 │   ├── alembic/           # 数据库 migration 脚本与运行环境
 │   ├── alembic.ini        # Alembic 配置入口
 │   ├── app/
-│   │   ├── api/          # FastAPI 路由和请求/响应模型
-│   │   ├── services/     # 用例编排
+│   │   ├── api/          # FastAPI 路由与 HTTP 请求/响应模型
+│   │   ├── services/     # 文档生命周期与 RAG 用例编排
 │   │   ├── document_processing/ # 纯文档解析器和统一解析结果
-│   │   ├── llm/          # 生成模型消息结构和供应商适配
-│   │   ├── rag/          # 后续分块、嵌入、检索、上下文组装
-│   │   ├── db/           # SQLAlchemy 与 SQLite
+│   │   ├── embeddings/   # DashScope Embedding 适配
+│   │   ├── llm/          # 消息结构和 DashScope LLM 适配
+│   │   ├── models/       # SQLAlchemy 模型
 │   │   ├── stores/       # Chroma 访问
-│   │   └── core/         # 配置、日志、公共错误
+│   │   └── database.py   # SQLite Engine 和 Session
 │   └── tests/
 └── frontend/
     └── src/
-        ├── api/
-        ├── components/
-        └── views/
+        ├── api/          # Fetch 和 API 契约
+        ├── composables/  # 页面业务状态
+        ├── components/   # 单一职责 UI 组件
+        ├── utils/        # 纯展示工具
+        └── views/        # 页面组合
 ```
 
 如果某个目录在当时只有一个简单文件，可先采用更扁平的结构；当真实职责增加时再拆分。

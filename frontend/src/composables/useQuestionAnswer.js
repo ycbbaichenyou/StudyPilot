@@ -29,7 +29,9 @@ export function useQuestionAnswer(knowledgeBaseId) {
       }
       return result
     } catch (error) {
-      answerError.value = getErrorMessage(error, '问题回答失败。')
+      if (currentKnowledgeBaseId === unref(knowledgeBaseId)) {
+        answerError.value = getErrorMessage(error, '问题回答失败。')
+      }
       return null
     } finally {
       isAnswering.value = false

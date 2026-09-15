@@ -1,6 +1,11 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 
+import {
+  formatDistance,
+  formatSourceLocation,
+} from '../utils/ragPresentation.js'
+
 const props = defineProps({
   initialQuery: {
     type: String,
@@ -53,19 +58,6 @@ const hasQuery = computed(() => Boolean(query.value.trim()))
 const canRun = computed(
   () => props.canDebug && hasQuery.value && !isBusy.value,
 )
-
-function formatDistance(distance) {
-  const numericDistance = Number(distance)
-  return Number.isFinite(numericDistance) ? numericDistance.toFixed(4) : '—'
-}
-
-function sourceLabel(item) {
-  const range =
-    item.source_start === item.source_end
-      ? `${item.source_start}`
-      : `${item.source_start}–${item.source_end}`
-  return `${item.source_type} ${range}`
-}
 
 function summarizeText(text, limit = 220) {
   const normalizedText = String(text ?? '').replace(/\s+/g, ' ').trim()
@@ -239,7 +231,7 @@ watch(
             </div>
             <p>{{ summarizeText(item.text) }}</p>
             <footer>
-              <span>{{ sourceLabel(item) }}</span>
+              <span>{{ formatSourceLocation(item) }}</span>
               <span>chunk {{ item.chunk_id }}</span>
             </footer>
           </li>
