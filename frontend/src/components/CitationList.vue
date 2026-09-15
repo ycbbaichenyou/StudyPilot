@@ -52,11 +52,11 @@ const statusMessage = computed(() => {
 </script>
 
 <template>
-  <section class="citation-section">
+  <section class="citation-section" :data-status="citationStatus">
     <div class="citation-heading">
       <div>
         <h3>引用来源</h3>
-        <span>{{ citations.length }} 条有效来源</span>
+        <span>有效引用数量：{{ citations.length }}</span>
       </div>
       <StatusBadge :status="citationStatus" />
     </div>

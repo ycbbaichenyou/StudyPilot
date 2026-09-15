@@ -84,5 +84,34 @@ const displayedStatus = computed(() => {
         上下文已按预算截断
       </span>
     </footer>
+
+    <details v-if="result" class="answer-debug-details">
+      <summary>
+        <span>Answer Debug</span>
+        <small>查看原始响应指标</small>
+      </summary>
+      <dl class="answer-debug-metrics">
+        <div>
+          <dt>status</dt>
+          <dd>{{ result.status }}</dd>
+        </div>
+        <div :data-status="result.citation_status">
+          <dt>citation_status</dt>
+          <dd>{{ result.citation_status }}</dd>
+        </div>
+        <div>
+          <dt>context_truncated</dt>
+          <dd>{{ result.context_truncated ? 'true' : 'false' }}</dd>
+        </div>
+        <div>
+          <dt>used_context_characters</dt>
+          <dd>{{ result.used_context_characters }}</dd>
+        </div>
+        <div>
+          <dt>citation_count</dt>
+          <dd>{{ result.citations.length }}</dd>
+        </div>
+      </dl>
+    </details>
   </section>
 </template>
