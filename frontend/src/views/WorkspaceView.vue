@@ -15,9 +15,11 @@ const {
   selectedKnowledgeBaseId,
   isLoadingKnowledgeBases,
   isCreatingKnowledgeBase,
+  deletingKnowledgeBaseIds,
   knowledgeBaseError,
   loadKnowledgeBases,
   createKnowledgeBase,
+  deleteKnowledgeBase,
   selectKnowledgeBase,
 } = useKnowledgeBases()
 
@@ -25,10 +27,12 @@ const {
   documents,
   isLoadingDocuments,
   isUploadingDocument,
+  deletingDocumentIds,
   documentError,
   processingStates,
   uploadAndProcessDocument,
   processDocument,
+  deleteDocument,
 } = useDocuments(selectedKnowledgeBaseId)
 
 const { answerResult, isAnswering, answerError, askQuestion } =
@@ -59,9 +63,11 @@ onMounted(loadKnowledgeBases)
       :selected-id="selectedKnowledgeBaseId"
       :loading="isLoadingKnowledgeBases"
       :creating="isCreatingKnowledgeBase"
+      :deleting-ids="deletingKnowledgeBaseIds"
       :error="knowledgeBaseError"
       @select="selectKnowledgeBase"
       @create="createKnowledgeBase"
+      @delete="deleteKnowledgeBase"
     />
 
     <main class="workspace-main">
@@ -92,11 +98,13 @@ onMounted(loadKnowledgeBases)
           :knowledge-base="selectedKnowledgeBase"
           :documents="documents"
           :processing-states="processingStates"
+          :deleting-ids="deletingDocumentIds"
           :loading="isLoadingDocuments"
           :uploading="isUploadingDocument"
           :error="documentError"
           @upload="uploadAndProcessDocument"
           @process="processDocument"
+          @delete="deleteDocument"
         />
 
         <div class="question-column">

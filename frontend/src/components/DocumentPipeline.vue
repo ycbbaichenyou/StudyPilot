@@ -12,18 +12,35 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  deleting: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['process'])
 
 const isReady = computed(
-  () => props.document.embedding_status === 'embedded',
+  () =>
+    props.document.status === 'parsed' &&
+    props.document.embedding_status === 'embedded',
 )
 const isBusy = computed(
   () =>
+    props.deleting ||
     props.processState.running ||
     props.document.status === 'parsing' ||
     props.document.embedding_status === 'embedding',
+)
+const parseStatus = computed(() =>
+  props.processState.running && props.processState.step === 'parsing'
+    ? 'parsing'
+    : props.document.status,
+)
+const embeddingStatus = computed(() =>
+  props.processState.running && props.processState.step === 'embedding'
+    ? 'embedding'
+    : props.document.embedding_status,
 )
 const chunkStatus = computed(() => {
   if (props.processState.step === 'chunking') {
@@ -54,10 +71,13 @@ const actionLabel = computed(() => {
     return labels[props.processState.step] ?? '处理中…'
   }
   if (props.document.status === 'parse_failed') {
-    return '重试解析与索引'
+    return '重新解析'
   }
-  if (['embedding_failed', 'stale'].includes(props.document.embedding_status)) {
-    return '重试构建索引'
+  if (props.document.embedding_status === 'embedding_failed') {
+    return '重新向量化'
+  }
+  if (props.document.embedding_status === 'stale') {
+    return '重新建立索引'
   }
   return '继续处理'
 })
@@ -82,7 +102,7 @@ const displayedError = computed(() => {
         <span class="step-number">1</span>
         <span class="step-copy">
           <small>Parse</small>
-          <StatusBadge :status="document.status" />
+          <StatusBadge :status="parseStatus" />
         </span>
       </div>
       <span class="pipeline-line" aria-hidden="true"></span>
@@ -98,7 +118,7 @@ const displayedError = computed(() => {
         <span class="step-number">3</span>
         <span class="step-copy">
           <small>Embedding</small>
-          <StatusBadge :status="document.embedding_status" />
+          <StatusBadge :status="embeddingStatus" />
         </span>
       </div>
     </div>
@@ -121,7 +141,7 @@ const displayedError = computed(() => {
         :disabled="isBusy"
         @click="emit('process', document)"
       >
-        {{ actionLabel }}
+        {{ deleting ? '删除中…' : actionLabel }}
       </button>
     </div>
   </div>

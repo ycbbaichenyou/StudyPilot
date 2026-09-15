@@ -15,6 +15,10 @@ export function useQuestionAnswer(knowledgeBaseId) {
       return null
     }
 
+    if (isAnswering.value) {
+      return null
+    }
+
     isAnswering.value = true
     answerError.value = ''
     answerResult.value = null

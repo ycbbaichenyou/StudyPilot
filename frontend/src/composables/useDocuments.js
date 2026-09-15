@@ -4,6 +4,7 @@ import { ApiError, getErrorMessage } from '../api/client.js'
 import {
   buildDocumentChunks,
   buildDocumentEmbedding,
+  deleteDocument as deleteDocumentRequest,
   listDocuments,
   parseDocument,
   uploadDocument,
@@ -22,6 +23,7 @@ export function useDocuments(knowledgeBaseId) {
   const documents = ref([])
   const isLoadingDocuments = ref(false)
   const isUploadingDocument = ref(false)
+  const deletingDocumentIds = reactive(new Set())
   const documentError = ref('')
   const processingStates = reactive({})
   let loadSequence = 0
@@ -99,7 +101,7 @@ export function useDocuments(knowledgeBaseId) {
 
   async function processDocument(document) {
     const state = processingStateFor(document.id)
-    if (state.running) {
+    if (state.running || deletingDocumentIds.has(document.id)) {
       return null
     }
 
@@ -127,13 +129,17 @@ export function useDocuments(knowledgeBaseId) {
         }
       }
 
-      state.step = 'chunking'
-      const chunkResult = await buildDocumentChunks(document.id)
-      state.chunkCount = chunkResult.chunks.length
-      if (!chunkResult.chunks.length) {
-        throw new ApiError('文档没有可用于向量化的文本块。', {
-          data: chunkResult,
-        })
+      const retryEmbeddingOnly =
+        currentDocument.embedding_status === 'embedding_failed'
+      if (!retryEmbeddingOnly) {
+        state.step = 'chunking'
+        const chunkResult = await buildDocumentChunks(document.id)
+        state.chunkCount = chunkResult.chunks.length
+        if (!chunkResult.chunks.length) {
+          throw new ApiError('文档没有可用于向量化的文本块。', {
+            data: chunkResult,
+          })
+        }
       }
 
       state.step = 'embedding'
@@ -176,6 +182,10 @@ export function useDocuments(knowledgeBaseId) {
       return null
     }
 
+    if (isUploadingDocument.value) {
+      return null
+    }
+
     isUploadingDocument.value = true
     documentError.value = ''
     try {
@@ -190,6 +200,34 @@ export function useDocuments(knowledgeBaseId) {
       return null
     } finally {
       isUploadingDocument.value = false
+    }
+  }
+
+  async function deleteDocument(document) {
+    const documentId = document.id
+    const processingState = processingStateFor(documentId)
+    if (
+      deletingDocumentIds.has(documentId) ||
+      processingState.running
+    ) {
+      return false
+    }
+
+    deletingDocumentIds.add(documentId)
+    processingState.error = ''
+    documentError.value = ''
+    try {
+      await deleteDocumentRequest(documentId)
+      delete processingStates[documentId]
+      await loadDocuments()
+      return true
+    } catch (error) {
+      const message = getErrorMessage(error, '文档删除失败。')
+      processingState.error = message
+      documentError.value = message
+      return false
+    } finally {
+      deletingDocumentIds.delete(documentId)
     }
   }
 
@@ -208,10 +246,12 @@ export function useDocuments(knowledgeBaseId) {
     documents,
     isLoadingDocuments,
     isUploadingDocument,
+    deletingDocumentIds,
     documentError,
     processingStates,
     loadDocuments,
     uploadAndProcessDocument,
     processDocument,
+    deleteDocument,
   }
 }

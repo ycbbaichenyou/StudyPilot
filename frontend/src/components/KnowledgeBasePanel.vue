@@ -18,13 +18,17 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  deletingIds: {
+    type: Object,
+    required: true,
+  },
   error: {
     type: String,
     default: '',
   },
 })
 
-const emit = defineEmits(['select', 'create'])
+const emit = defineEmits(['select', 'create', 'delete'])
 const name = ref('')
 const description = ref('')
 const formError = ref('')
@@ -41,6 +45,19 @@ function submitKnowledgeBase() {
     name: cleanedName,
     description: description.value.trim(),
   })
+}
+
+function confirmKnowledgeBaseDeletion(knowledgeBase) {
+  if (props.deletingIds.has(knowledgeBase.id)) {
+    return
+  }
+
+  const confirmed = window.confirm(
+    `确定删除知识库“${knowledgeBase.name}”吗？\n\n这会同时删除其中的全部文档和向量索引，且无法撤销。`,
+  )
+  if (confirmed) {
+    emit('delete', knowledgeBase.id)
+  }
 }
 
 watch(
@@ -79,21 +96,35 @@ watch(
       </p>
 
       <div v-else class="knowledge-list">
-        <button
+        <div
           v-for="knowledgeBase in knowledgeBases"
           :key="knowledgeBase.id"
-          class="knowledge-item"
+          class="knowledge-row"
           :class="{ active: knowledgeBase.id === selectedId }"
-          type="button"
-          :aria-pressed="knowledgeBase.id === selectedId"
-          @click="emit('select', knowledgeBase.id)"
         >
-          <span class="knowledge-icon">KB</span>
-          <span class="knowledge-copy">
-            <strong>{{ knowledgeBase.name }}</strong>
-            <small>{{ knowledgeBase.description || '暂无描述' }}</small>
-          </span>
-        </button>
+          <button
+            class="knowledge-item"
+            type="button"
+            :disabled="deletingIds.has(knowledgeBase.id)"
+            :aria-pressed="knowledgeBase.id === selectedId"
+            @click="emit('select', knowledgeBase.id)"
+          >
+            <span class="knowledge-icon">KB</span>
+            <span class="knowledge-copy">
+              <strong>{{ knowledgeBase.name }}</strong>
+              <small>{{ knowledgeBase.description || '暂无描述' }}</small>
+            </span>
+          </button>
+          <button
+            class="knowledge-delete"
+            type="button"
+            :disabled="deletingIds.has(knowledgeBase.id)"
+            :aria-label="`删除知识库 ${knowledgeBase.name}`"
+            @click="confirmKnowledgeBaseDeletion(knowledgeBase)"
+          >
+            {{ deletingIds.has(knowledgeBase.id) ? '删除中…' : '删除' }}
+          </button>
+        </div>
       </div>
     </section>
 

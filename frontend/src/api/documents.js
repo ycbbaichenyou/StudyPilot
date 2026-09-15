@@ -30,3 +30,9 @@ export function buildDocumentEmbedding(documentId) {
     method: 'POST',
   })
 }
+
+export function deleteDocument(documentId) {
+  return apiRequest(`/api/documents/${documentId}`, {
+    method: 'DELETE',
+  })
+}

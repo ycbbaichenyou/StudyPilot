@@ -13,3 +13,9 @@ export function createKnowledgeBase({ name, description }) {
     },
   })
 }
+
+export function deleteKnowledgeBase(knowledgeBaseId) {
+  return apiRequest(`/api/knowledge-bases/${knowledgeBaseId}`, {
+    method: 'DELETE',
+  })
+}

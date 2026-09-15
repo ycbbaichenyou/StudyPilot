@@ -20,6 +20,10 @@ const props = defineProps({
     type: Object,
     required: true,
   },
+  deletingIds: {
+    type: Object,
+    required: true,
+  },
   loading: {
     type: Boolean,
     default: false,
@@ -34,7 +38,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['upload', 'process'])
+const emit = defineEmits(['upload', 'process', 'delete'])
 const selectedFile = ref(null)
 const fileInput = ref(null)
 const fileError = ref('')
@@ -75,6 +79,22 @@ function formatFileSize(bytes) {
     return `${(bytes / 1024).toFixed(1)} KiB`
   }
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+function confirmDocumentDeletion(document) {
+  if (
+    props.deletingIds.has(document.id) ||
+    props.processingStates[document.id]?.running
+  ) {
+    return
+  }
+
+  const confirmed = window.confirm(
+    `确定删除文档“${document.original_filename}”吗？\n\n对应的解析内容、文本块和向量索引也会一并删除，且无法撤销。`,
+  )
+  if (confirmed) {
+    emit('delete', document)
+  }
 }
 
 watch(
@@ -155,6 +175,7 @@ watch(
         v-for="document in documents"
         :key="document.id"
         class="document-card"
+        :class="{ deleting: deletingIds.has(document.id) }"
       >
         <div class="document-summary">
           <div class="file-type">{{ document.file_type.toUpperCase() }}</div>
@@ -162,11 +183,25 @@ watch(
             <strong>{{ document.original_filename }}</strong>
             <span>{{ formatFileSize(document.file_size) }}</span>
           </div>
-          <StatusBadge :status="document.embedding_status" />
+          <div class="document-card-actions">
+            <StatusBadge :status="document.embedding_status" />
+            <button
+              class="document-delete"
+              type="button"
+              :disabled="
+                deletingIds.has(document.id) ||
+                processingStates[document.id]?.running
+              "
+              @click="confirmDocumentDeletion(document)"
+            >
+              {{ deletingIds.has(document.id) ? '删除中…' : '删除文档' }}
+            </button>
+          </div>
         </div>
         <DocumentPipeline
           :document="document"
           :process-state="processingStates[document.id]"
+          :deleting="deletingIds.has(document.id)"
           @process="emit('process', $event)"
         />
       </article>

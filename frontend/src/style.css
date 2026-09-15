@@ -217,13 +217,33 @@ p {
   overflow-y: auto;
 }
 
+.knowledge-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 0.8rem;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.knowledge-row:hover {
+  background: rgb(255 255 255 / 5%);
+}
+
+.knowledge-row.active {
+  border-color: rgb(125 150 241 / 28%);
+  background: #253450;
+}
+
 .knowledge-item {
   display: flex;
   align-items: center;
   gap: 0.7rem;
   width: 100%;
   padding: 0.75rem;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: 0.8rem;
   color: #c5cede;
   background: transparent;
@@ -236,13 +256,27 @@ p {
 
 .knowledge-item:hover {
   color: #fff;
-  background: rgb(255 255 255 / 5%);
 }
 
-.knowledge-item.active {
-  border-color: rgb(125 150 241 / 28%);
+.knowledge-row.active .knowledge-item {
   color: #fff;
-  background: #253450;
+}
+
+.knowledge-delete {
+  margin-right: 0.55rem;
+  padding: 0.35rem 0.45rem;
+  border: 0;
+  border-radius: 0.45rem;
+  color: #9eabc0;
+  background: transparent;
+  font-size: 0.65rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.knowledge-delete:not(:disabled):hover {
+  color: #ffc1cd;
+  background: rgb(180 35 61 / 18%);
 }
 
 .knowledge-icon {
@@ -541,6 +575,11 @@ p {
   border: 1px solid #e2e6ee;
   border-radius: 0.95rem;
   background: #fff;
+  transition: opacity 160ms ease;
+}
+
+.document-card.deleting {
+  opacity: 0.66;
 }
 
 .document-summary {
@@ -579,6 +618,28 @@ p {
 .document-name span {
   color: var(--muted);
   font-size: 0.7rem;
+}
+
+.document-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.document-delete {
+  padding: 0.28rem 0.45rem;
+  border: 0;
+  border-radius: 0.45rem;
+  color: #9b4556;
+  background: #fff1f3;
+  font-size: 0.65rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.document-delete:not(:disabled):hover {
+  color: #fff;
+  background: var(--danger);
 }
 
 .document-pipeline {
@@ -1039,6 +1100,15 @@ p {
 
   .pipeline-track {
     grid-template-columns: 1fr;
+  }
+
+  .document-summary {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .document-card-actions {
+    grid-column: 1 / -1;
+    justify-content: space-between;
   }
 
   .pipeline-line {

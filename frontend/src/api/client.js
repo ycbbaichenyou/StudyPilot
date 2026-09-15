@@ -1,6 +1,16 @@
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() ?? ''
 const API_BASE_URL = configuredBaseUrl.replace(/\/+$/, '')
 
+const STATUS_MESSAGES = {
+  400: '请求内容有误',
+  404: '请求的资源不存在',
+  409: '资源当前状态不允许此操作',
+  413: '上传文件超过大小限制',
+  422: '请求参数校验失败',
+  502: '模型服务暂时不可用',
+  503: '检索或存储服务暂时不可用',
+}
+
 export class ApiError extends Error {
   constructor(message, { status = 0, data = null, cause = null } = {}) {
     super(message)
@@ -12,24 +22,27 @@ export class ApiError extends Error {
 }
 
 function errorMessageFromPayload(payload, status) {
+  const statusMessage = STATUS_MESSAGES[status] ?? `请求失败（HTTP ${status}）`
+  let detail = ''
+
   if (typeof payload?.detail === 'string') {
-    return payload.detail
+    detail = payload.detail
   }
 
-  if (Array.isArray(payload?.detail)) {
+  if (!detail && Array.isArray(payload?.detail)) {
     const messages = payload.detail
       .map((item) => item?.msg)
       .filter((message) => typeof message === 'string')
     if (messages.length) {
-      return messages.join('；')
+      detail = messages.join('；')
     }
   }
 
-  if (typeof payload === 'string' && payload.trim()) {
-    return payload.trim()
+  if (!detail && typeof payload === 'string' && payload.trim()) {
+    detail = payload.trim()
   }
 
-  return `请求失败（HTTP ${status}）`
+  return detail ? `${statusMessage}：${detail}` : statusMessage
 }
 
 async function readResponseBody(response) {
@@ -72,7 +85,15 @@ export async function apiRequest(
     })
   }
 
-  const payload = await readResponseBody(response)
+  let payload
+  try {
+    payload = await readResponseBody(response)
+  } catch (cause) {
+    throw new ApiError('无法读取服务器响应，请稍后重试。', {
+      status: response.status,
+      cause,
+    })
+  }
   if (!response.ok) {
     throw new ApiError(errorMessageFromPayload(payload, response.status), {
       status: response.status,
