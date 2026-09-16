@@ -14,6 +14,33 @@ StudyPilot 是一个面向本科生的可读、可调试 RAG 学习项目。它�
 
 项目刻意不使用 LangChain 隐藏核心 RAG 流程。V1 也不包含 Agent、Tool Calling、Memory、多轮对话、登录权限和流式回答。
 
+## Preview
+
+![StudyPilot knowledge base workspace](docs/SCREENSHOTS/01-workspace.png)
+
+## RAG Pipeline
+
+```text
+Document → Parse → Chunk → Embedding → Chroma → Retrieval → Context → Qwen Plus → Citation Validation → Answer
+```
+
+## Highlights
+
+- Core RAG pipeline implemented without LangChain
+- Explicit embedding lifecycle and vector synchronization
+- Citation integrity validation
+- Knowledge-base isolation
+- Retrieval / Context / Answer debugging
+- Vue + FastAPI full-stack implementation
+
+## Demo
+
+查看完整产品流程与界面截图：[docs/DEMO.md](docs/DEMO.md)
+
+## Project Overview
+
+查看项目背景、系统架构与核心设计：[docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md)
+
 ## 技术栈
 
 | 范围 | 技术 | 职责 |
